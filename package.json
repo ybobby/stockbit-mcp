@@ -52,7 +52,8 @@
     "stockbit-auth": "dist/bin/stockbit-auth.js",
     "stockbit-alerts": "dist/bin/stockbit-alerts.js",
     "stockbit-live": "dist/bin/stockbit-live.js",
-    "stockbit-batch": "dist/bin/stockbit-batch.js"
+    "stockbit-batch": "dist/bin/stockbit-batch.js",
+    "stockbit-signals": "dist/bin/stockbit-signals.js"
   },
   "exports": {
     ".": "./dist/src/server.js",
@@ -80,10 +81,13 @@
     "dev:alerts": "node --import tsx bin/stockbit-alerts.ts",
     "live": "node dist/bin/stockbit-live.js",
     "dev:live": "node --import tsx bin/stockbit-live.ts",
+    "signals": "node dist/bin/stockbit-signals.js",
+    "dev:signals": "node --import tsx bin/stockbit-signals.ts",
     "dev:batch": "node --import tsx bin/stockbit-batch.ts",
     "verify:tools": "node --import tsx scripts/verify-tools.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "^4.6.7"
   },
