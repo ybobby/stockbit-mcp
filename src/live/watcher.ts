@@ -74,7 +74,7 @@ export function tagWide(signal: Signal, lists: string[] | undefined): Signal {
     ...signal,
     detail: [...signal.detail, `From Stockbit's top ${en} movers list, outside the top-stock hundred.`],
     ...(signal.id
-      ? { id: { headline: signal.id.headline, detail: [...signal.id.detail, `Saham ini masuk lewat daftar top ${id} Stockbit, di luar 100 saham utama.`] } }
+      ? { id: { headline: signal.id.headline, detail: [...signal.id.detail, `Saham ini masuk lewat daftar top ${id} harian, di luar 100 saham utama.`] } }
       : {}),
   };
 }
