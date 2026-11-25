@@ -110,6 +110,11 @@ test("a regular stock is not mistaken for a call auction just because iepiev exi
 
 test("an unreadable payload returns null rather than an empty book", () => {
   // An empty book would read as "no depth", which is a real and very different market state.
+  // The wire's envelope, exactly as getJson returns it. The watcher passed this shape for its whole
+  // life and every book came back null, which blinded all five book detectors without an error.
+  const wrapped = parseOrderBook({ message: "Successfully retrieved", data: BRMS });
+  assert.ok(wrapped, "the { message, data } envelope must parse");
+  assert.deepEqual(wrapped, parseOrderBook(BRMS));
   assert.equal(parseOrderBook(null), null);
   assert.equal(parseOrderBook({ symbol: "BRMS" }), null);
 });

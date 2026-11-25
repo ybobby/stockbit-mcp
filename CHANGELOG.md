@@ -23,6 +23,11 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
 
 ### Fixed
 
+- The live watcher's order-book detectors (`band-approach`, `book-imbalance`, `wall-change`,
+  `uma-flag`, `floor-locked`) never fired: `parseOrderBook` was handed the wire's `{ message, data }`
+  envelope, which `src/core/pricefeed.ts` unwraps and the watcher did not, so every book was reported
+  as "did not parse". Found on the first live dry-run of `stockbit-live watch` (12 of 12 book reads
+  failing per pass). The parser now accepts either shape.
 - Login capture and HAR import now accept main-session responses from `exodus.api.stockbit.com`,
   including the final new-device phone verification response. Token sources use exact hostname
   checks so unrelated URLs containing a Stockbit host name are rejected.
