@@ -31,6 +31,8 @@ export interface ReplayInput {
   review?: AiReviewer;
   maxBuysPerDay?: number;
   maxOpen?: number;
+  /** Signals still open from earlier days of a multi-day replay. Not mutated. */
+  journal?: Journal;
 }
 
 export interface ReplayEvent {
@@ -66,6 +68,8 @@ export interface ReplayResult {
   trades: ReplayTrade[];
   vetoes: number;
   limits: string[];
+  /** The journal at the end of the day, to carry into the next one. */
+  journal: Journal;
 }
 
 /**
@@ -119,7 +123,7 @@ export async function replayDay(input: ReplayInput): Promise<ReplayResult> {
   const symbols = [...input.contexts.keys()].filter((s) => series.has(s));
   const events: ReplayEvent[] = [];
   const messages: { at: string; text: string }[] = [];
-  let journal: Journal = emptyJournal();
+  let journal: Journal = input.journal ? structuredClone(input.journal) : emptyJournal();
   let i = 0;
   const nowAt = () => new Date(timeline[Math.min(i, timeline.length - 1)] ?? Date.now());
 
@@ -165,31 +169,11 @@ export async function replayDay(input: ReplayInput): Promise<ReplayResult> {
     },
   );
 
-  const buys = events.filter((e) => e.type === "buy");
-  const trades: ReplayTrade[] = buys.map((b) => {
-    const symbol = String(b.symbol);
-    const closed = journal.closed.find((c) => c.symbol === symbol);
-    const exitEvent = events.find((e) => e.type === "exit" && e.symbol === symbol && e.kind !== "target1");
-    const pts = series.get(symbol) ?? [];
-    const last = pts[pts.length - 1]?.price ?? Number(b.entry);
-    const entry = Number(b.entry);
-    const sell = closed ? closed.exitPrice : null;
-    const ref = sell ?? last;
-    return {
-      symbol,
-      buyAt: b.at,
-      buy: entry,
-      stop: Number(b.stop),
-      target1: Number(b.target1),
-      target2: Number(b.target2),
-      sellAt: exitEvent?.at ?? null,
-      sell,
-      exitKind: closed?.exitKind ?? null,
-      returnPct: Math.round(((ref - entry) / entry) * 10000) / 100,
-      stillOpen: !closed,
-      aiNote: (b.aiNote as string | null) ?? null,
-    };
-  });
+  const notes = new Map(events.filter((e) => e.type === "buy").map((e) => [String(e.id), (e.aiNote as string | null) ?? null]));
+  const trades = tradesFrom(journal, (sym) => {
+    const pts = series.get(sym) ?? [];
+    return pts[pts.length - 1]?.price ?? null;
+  }, notes);
 
   const done = events.find((e) => e.type === "analysis-done");
   return {
@@ -200,6 +184,7 @@ export async function replayDay(input: ReplayInput): Promise<ReplayResult> {
     messages,
     trades,
     vetoes: events.filter((e) => e.type === "vetoed").length,
+    journal,
     limits: [
       "Harga dari titik grafik intraday, bukan setiap kutipan yang akan dibaca bot live.",
       "Analisis pagi memakai data sampai kemarin. Hasil satu hari tidak membuktikan strategi bekerja.",
@@ -207,4 +192,84 @@ export async function replayDay(input: ReplayInput): Promise<ReplayResult> {
       "Belum termasuk fee broker dan selisih harga.",
     ],
   };
+}
+
+/** Every signal in a journal as a trade row, open ones marked to `lastPrice`. */
+export function tradesFrom(
+  journal: Journal,
+  lastPrice: (symbol: string) => number | null,
+  notes: Map<string, string | null> = new Map(),
+): ReplayTrade[] {
+  const pct = (from: number, to: number) => Math.round(((to - from) / from) * 10000) / 100;
+  const closed: ReplayTrade[] = journal.closed.map((c) => ({
+    symbol: c.symbol,
+    buyAt: c.openedAt,
+    buy: c.entry,
+    stop: c.stop,
+    target1: c.target1,
+    target2: c.target2,
+    sellAt: c.closedAt,
+    sell: c.exitPrice,
+    exitKind: c.exitKind,
+    returnPct: c.returnPct,
+    stillOpen: false,
+    aiNote: notes.get(c.id) ?? null,
+  }));
+  const open: ReplayTrade[] = journal.open.map((o) => {
+    const last = lastPrice(o.symbol) ?? o.entry;
+    return {
+      symbol: o.symbol,
+      buyAt: o.openedAt,
+      buy: o.entry,
+      stop: o.stop,
+      target1: o.target1,
+      target2: o.target2,
+      sellAt: null,
+      sell: null,
+      exitKind: null,
+      returnPct: pct(o.entry, last),
+      stillOpen: true,
+      aiNote: notes.get(o.id) ?? null,
+    };
+  });
+  return [...closed, ...open].sort((a, b) => Date.parse(a.buyAt) - Date.parse(b.buyAt));
+}
+
+export interface ReplayRangeResult {
+  days: { day: string; analysed: number; bullish: string[]; buys: number; exits: number }[];
+  trades: ReplayTrade[];
+  vetoes: number;
+  events: ReplayEvent[];
+  limits: string[];
+}
+
+/**
+ * Several days in a row, with signals carried overnight, so a BUY on Monday can meet its SELL on
+ * Wednesday. Each day gets its own morning context (the caller cuts each at the day before).
+ */
+export async function replayDays(
+  days: Omit<ReplayInput, "journal">[],
+): Promise<ReplayRangeResult> {
+  let journal: Journal | undefined;
+  const out: ReplayRangeResult = { days: [], trades: [], vetoes: 0, events: [], limits: [] };
+  const notes = new Map<string, string | null>();
+  const last = new Map<string, number>();
+  for (const input of days) {
+    const r = await replayDay({ ...input, journal });
+    journal = r.journal;
+    out.events.push(...r.events);
+    out.vetoes += r.vetoes;
+    out.limits = r.limits;
+    for (const e of r.events) if (e.type === "buy") notes.set(String(e.id), (e.aiNote as string | null) ?? null);
+    for (const [sym, pts] of input.series) if (pts.length) last.set(sym, [...pts].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))[pts.length - 1].price);
+    out.days.push({
+      day: r.day,
+      analysed: r.analysed,
+      bullish: r.bullish,
+      buys: r.events.filter((e) => e.type === "buy").length,
+      exits: r.events.filter((e) => e.type === "exit" && e.kind !== "target1").length,
+    });
+  }
+  out.trades = journal ? tradesFrom(journal, (s) => last.get(s) ?? null, notes) : [];
+  return out;
 }

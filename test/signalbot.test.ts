@@ -333,3 +333,35 @@ test("no new BUY outside the entry window, but exits still run", async () => {
   assert.equal(early.trades[0].exitKind, "stop");
   assert.equal(early.trades[0].sellAt, at("15:45"));
 });
+
+import { replayDays } from "../src/signals/replay.ts";
+import { replayRangeText } from "../src/signals/messages.ts";
+
+test("a multi-day replay carries the signal overnight and sells it on a later day", async () => {
+  const at = (day: string, hhmm: string) => new Date(`${day}T${hhmm}:00+07:00`).toISOString();
+  const r = await replayDays([
+    {
+      day: "2026-11-23",
+      contexts: new Map([["TEST", ctx()]]),
+      series: new Map([["TEST", [{ at: at("2026-11-23", "10:00"), price: 1020 }, { at: at("2026-11-23", "15:00"), price: 1030 }]]]),
+      whales: () => [],
+    },
+    {
+      day: "2026-11-24",
+      contexts: new Map([["TEST", ctx({ prevHigh: 1040 })]]),
+      series: new Map([["TEST", [{ at: at("2026-11-24", "10:00"), price: 1035 }, { at: at("2026-11-24", "11:00"), price: 1115 }]]]),
+      whales: () => [],
+    },
+  ]);
+  assert.equal(r.trades.length, 1);
+  const t = r.trades[0];
+  assert.equal(t.buyAt, at("2026-11-23", "10:00"));
+  assert.equal(t.sellAt, at("2026-11-24", "11:00"));
+  assert.equal(t.exitKind, "target2");
+  assert.equal(r.days[0].buys, 1);
+  assert.equal(r.days[1].exits, 1);
+  const text = replayRangeText(r.days, r.trades);
+  assert.match(text, /2026-11-23 s\.d\. 2026-11-24/);
+  assert.match(text, /BELI Sen 23\/11 10:00/);
+  assert.match(text, /JUAL Sel 24\/11 11:00/);
+});

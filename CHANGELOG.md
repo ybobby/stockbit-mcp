@@ -27,7 +27,9 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
   plan instead of a billed API key (the key is stripped from the child's environment so Claude Code
   cannot fall back to API billing). `stockbit-signals replay [scope] [date]` drives the real loop
   over one day of intraday chart points with the morning context cut off at the day before, and can
-  post one labelled SIMULASI summary to Telegram.
+  post one labelled SIMULASI summary to Telegram. It takes up to five days of the current week, carries
+  open signals overnight so a Monday BUY can meet its Wednesday SELL, and reports how many Stockbit
+  requests it made.
 - `stockbit-live watch`: the live detectors run all session and every alert the alert engine lets
   through is sent to Telegram. `signals` answered one question and exited, which is the wrong shape
   for "buzz my phone when large money lands". No detector or threshold changed; the loop adds the day

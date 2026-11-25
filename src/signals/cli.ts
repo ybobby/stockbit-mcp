@@ -40,8 +40,8 @@ export const SIGNALS_COMMANDS: CommandTable = {
     ],
   },
   replay: {
-    summary: "replay one day of this week through the bot: what it would have sent, when, and the result",
-    usage: "[BBCA,ANTM|watchlist[:Name]] [YYYY-MM-DD]",
+    summary: "replay up to five days of this week through the bot: what it would have sent, when, and the result",
+    usage: "[BBCA,ANTM|watchlist[:Name]] [from YYYY-MM-DD] [to YYYY-MM-DD]",
     flags: {
       "--send": "post one SIMULASI summary to Telegram",
       "--all-series": "include every symbol's price series in the output, not only the traded ones",
@@ -53,7 +53,8 @@ export const SIGNALS_COMMANDS: CommandTable = {
     },
     positionals: [
       { name: "scope", required: false },
-      { name: "date", required: false },
+      { name: "from", required: false },
+      { name: "to", required: false },
     ],
   },
   status: {

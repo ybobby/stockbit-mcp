@@ -31,11 +31,11 @@ import { analyze, type AnalyzeDeps } from "../src/analysis/analyze.js";
 import { DEFAULT_UNIVERSE, SIGNALS_BIN, SIGNALS_COMMANDS, SIGNALS_EPILOGUE } from "../src/signals/cli.js";
 import { buildContext, tickFromQuote, whalesFromLog } from "../src/signals/context.js";
 import { claudeCodeReviewer, claudeReviewer, DEFAULT_MODEL, type AiReviewer } from "../src/signals/ai.js";
-import { replayDay, spreadOverSession, type PricePoint } from "../src/signals/replay.js";
+import { replayDays, spreadOverSession, type PricePoint } from "../src/signals/replay.js";
 import type { DailyContext } from "../src/signals/engine.js";
 import { journalPath, loadJournal, recap, saveJournal } from "../src/signals/ledger.js";
 import { mondayOf, runSignalBot } from "../src/signals/loop.js";
-import { recapText, replayText } from "../src/signals/messages.js";
+import { recapText, replayRangeText } from "../src/signals/messages.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { stockbitDir } from "../src/paths.js";
@@ -247,18 +247,34 @@ async function run(): Promise<void> {
   if (summary.ended === "auth") process.exit(3);
 }
 
-async function replay(): Promise<void> {
-  // The scope is optional, so a lone date (`replay 2026-11-25`) is the date, not a ticker list.
-  let [, scopeToken, dateToken]: (string | undefined)[] = positionals();
-  if (scopeToken && /^\d{4}-\d{2}-\d{2}$/.test(scopeToken) && dateToken === undefined) {
-    dateToken = scopeToken;
-    scopeToken = undefined;
+/** Weekdays from `from` to `to`, inclusive. */
+function weekdays(from: string, to: string): string[] {
+  const out: string[] = [];
+  for (let d = new Date(`${from}T00:00:00Z`); d <= new Date(`${to}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1)) {
+    if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) out.push(d.toISOString().slice(0, 10));
   }
-  const day = dateToken ?? wibTodayIso();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) fail("bad-arguments", `Date must be YYYY-MM-DD, got ${JSON.stringify(day)}.`);
+  return out;
+}
+
+async function replay(): Promise<void> {
+  // `replay [scope] [from] [to]`. The scope is optional, so date-shaped tokens are always dates.
+  const DATE = /^\d{4}-\d{2}-\d{2}$/;
+  const rest = positionals().slice(1);
+  const dates = rest.filter((t) => DATE.test(t));
+  const others = rest.filter((t) => !DATE.test(t));
+  if (others.length > 1 || dates.length > 2) fail("bad-arguments", "Usage: stockbit-signals replay [BBCA,ANTM|watchlist] [from YYYY-MM-DD] [to YYYY-MM-DD]");
+  const today = wibTodayIso();
+  const from = dates[0] ?? today;
+  const to = dates[1] ?? from;
+  if (to < from) fail("bad-arguments", `The end date ${to} is before the start date ${from}.`);
+  if (to > today) fail("bad-arguments", `${to} has not traded yet.`);
+  const days = weekdays(from, to);
+  if (!days.length) fail("bad-arguments", "No weekday in that range.");
+  if (days.length > 5) fail("bad-arguments", "At most five trading days: intraday points older than a week are not available.");
+
   let symbols: string[];
   try {
-    symbols = await symbolsFor(scopeToken);
+    symbols = await symbolsFor(others[0]);
   } catch (err) {
     if (err instanceof ScopeParseError) fail("bad-arguments", err.message);
     if (err instanceof StockbitError && err.kind === "auth") fail("auth", err.message, "Run stockbit-auth login.");
@@ -268,57 +284,83 @@ async function replay(): Promise<void> {
   const telegram = flag("send") ? telegramTargetFromEnv() : null;
   if (flag("send") && !telegram) fail("telegram-not-configured", "STOCKBIT_TELEGRAM_BOT_TOKEN and STOCKBIT_TELEGRAM_CHAT_ID must both be set.");
 
-  const deps = asOfDayDeps(day);
-  const contexts = new Map<string, DailyContext>();
-  const series = new Map<string, PricePoint[]>();
+  // Count what this run asks of Stockbit, so the cost of a replay (and of a live morning) is a
+  // measured number rather than a guess. Counting only; every request still goes through the
+  // closed route table.
+  let stockbitRequests = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (/stockbit\.com/i.test(url)) stockbitRequests++;
+    return realFetch(input, init);
+  }) as typeof fetch;
+
   const skipped: Record<string, string> = {};
   const sources: Record<string, string> = {};
-  for (const symbol of symbols) {
-    process.stderr.write(`replay ${day}: ${symbol}\n`);
-    try {
-      const report = await analyze({ symbol, includeSentiment: false }, deps);
-      const bars = await deps.bars(symbol, 40);
-      contexts.set(symbol, buildContext(report, bars.bars, day));
-      let pts: PricePoint[] = [];
-      // Today: the one-minute close series, the finest this server reads. It carries no clock, so
-      // times are spread over the session's trading minutes (see minuteSlots) and are approximate.
-      if (day === wibTodayIso()) {
-        const minute = await getIntradayPrices(symbol, 1);
-        const closes = minute.prices.filter((p): p is number => p !== null && p > 0);
-        if (closes.length >= 30) {
-          pts = spreadOverSession(day, closes);
-          sources[symbol] = `1m (${closes.length} titik, jam perkiraan)`;
-        }
+  const charts = new Map<string, Awaited<ReturnType<typeof getSeriesBars>>>();
+  const perDay: Parameters<typeof replayDays>[0] = [];
+  const morningRequests: Record<string, number> = {};
+
+  for (const day of days) {
+    const deps = asOfDayDeps(day);
+    const contexts = new Map<string, DailyContext>();
+    const series = new Map<string, PricePoint[]>();
+    const before = stockbitRequests;
+    for (const symbol of symbols) {
+      process.stderr.write(`replay ${day}: ${symbol}\n`);
+      try {
+        const report = await analyze({ symbol, includeSentiment: false }, deps);
+        const bars = await deps.bars(symbol, 40);
+        contexts.set(symbol, buildContext(report, bars.bars, day));
+      } catch (err) {
+        if (err instanceof StockbitError && err.kind === "auth") fail("auth", err.message, "Run stockbit-auth login.");
+        skipped[`${symbol} ${day}`] = err instanceof Error ? err.message : String(err);
+        continue;
       }
-      // Another day, or too few minute points: the chart's timestamped intraday points.
-      if (!pts.length) {
-        const chart = await getSeriesBars(symbol, "1w");
-        for (const b of chart.bars) {
-          if (!String(b.date).startsWith(day)) continue;
-          const at = jakartaIso(String(b.date));
-          if (at && b.close > 0) pts.push({ at, price: b.close });
+      try {
+        let pts: PricePoint[] = [];
+        // Today: the one-minute close series, the finest this server reads. It carries no clock, so
+        // times are spread over the session's trading minutes (see minuteSlots) and are approximate.
+        if (day === today) {
+          const minute = await getIntradayPrices(symbol, 1);
+          const closes = minute.prices.filter((p): p is number => p !== null && p > 0);
+          if (closes.length >= 30) {
+            pts = spreadOverSession(day, closes);
+            sources[`${symbol} ${day}`] = `1m (${closes.length} titik, jam perkiraan)`;
+          }
         }
-        if (pts.length) sources[symbol] = `chart 1w (${pts.length} titik)`;
+        // Another day: the chart's timestamped intraday points (coarser).
+        if (!pts.length) {
+          if (!charts.has(symbol)) charts.set(symbol, await getSeriesBars(symbol, "1w"));
+          for (const b of charts.get(symbol)!.bars) {
+            if (!String(b.date).startsWith(day)) continue;
+            const at = jakartaIso(String(b.date));
+            if (at && b.close > 0) pts.push({ at, price: b.close });
+          }
+          if (pts.length) sources[`${symbol} ${day}`] = `chart 1w (${pts.length} titik)`;
+        }
+        if (pts.length) series.set(symbol, pts);
+        else skipped[`${symbol} ${day}`] = "no intraday points for that day";
+      } catch (err) {
+        if (err instanceof StockbitError && err.kind === "auth") fail("auth", err.message, "Run stockbit-auth login.");
+        skipped[`${symbol} ${day}`] = err instanceof Error ? err.message : String(err);
       }
-      if (pts.length) series.set(symbol, pts);
-      else skipped[symbol] = "no intraday points for that day";
-    } catch (err) {
-      if (err instanceof StockbitError && err.kind === "auth") fail("auth", err.message, "Run stockbit-auth login.");
-      skipped[symbol] = err instanceof Error ? err.message : String(err);
     }
+    morningRequests[day] = stockbitRequests - before;
+    perDay.push({
+      day,
+      contexts,
+      series,
+      whales: (symbol) => whalesFromLog(whaleLogPath(), symbol, day),
+      review: ai.review,
+      maxBuysPerDay: positiveInt("max-buys", 3),
+    });
   }
 
-  const result = await replayDay({
-    day,
-    contexts,
-    series,
-    whales: (symbol) => whalesFromLog(whaleLogPath(), symbol, day),
-    review: ai.review,
-    maxBuysPerDay: positiveInt("max-buys", 3),
-  });
+  const result = await replayDays(perDay);
 
   let delivered: string | null = null;
-  const summaryText = replayText(day, result.trades, result.analysed, result.bullish);
+  const summaryText = replayRangeText(result.days, result.trades);
   if (telegram) delivered = (await postTelegram(telegram, summaryText)) ?? "sent";
 
   // Series only for the symbols that traded unless --all-series, thinned to one point per 5 minutes.
@@ -328,14 +370,23 @@ async function replay(): Promise<void> {
   // keep the later one so a chart gets one point per time.
   const thin = (pts: PricePoint[]) =>
     pts.filter((p, i) => (i === pts.length - 1 || new Date(p.at).getUTCMinutes() % 5 === 0) && pts[i + 1]?.at !== p.at);
+  const series: Record<string, PricePoint[]> = {};
+  for (const d of perDay) for (const [s, pts] of d.series) if (keep(s)) (series[s] ??= []).push(...thin(pts));
   emit({
     ok: true,
-    ...result,
+    from,
+    to,
+    days: result.days,
+    trades: result.trades,
+    vetoes: result.vetoes,
+    events: result.events.filter((e) => ["buy", "exit", "vetoed", "review-unavailable"].includes(e.type)),
+    limits: result.limits,
     ai: ai.label,
     skipped,
-    contexts: [...contexts.values()].map((c) => ({ symbol: c.symbol, lean: c.lean, score: c.score, confidence: c.confidence, prevHigh: c.prevHigh })),
+    contexts: perDay.map((d) => ({ day: d.day, rows: [...d.contexts.values()].map((c) => ({ symbol: c.symbol, lean: c.lean, score: c.score, prevHigh: c.prevHigh })) })),
     sources,
-    series: Object.fromEntries([...series].filter(([s]) => keep(s)).map(([s, pts]) => [s, thin(pts)])),
+    series,
+    stockbitRequests: { total: stockbitRequests, perDay: morningRequests, symbols: symbols.length },
     summaryText,
     telegram: telegram ? delivered : "not sent (pass --send)",
   });

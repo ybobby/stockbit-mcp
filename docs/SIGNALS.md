@@ -114,6 +114,7 @@ sinyal BELI dan JUAL akan keluar dan berapa hasilnya:
 ```bash
 node dist/bin/stockbit-signals.js replay --pretty              # hari ini, 25 saham bawaan
 node dist/bin/stockbit-signals.js replay BBCA,ANTM 2026-11-24  # saham dan tanggal tertentu
+node dist/bin/stockbit-signals.js replay 2026-11-23 2026-11-25  # Senin s.d. Rabu, sinyal dibawa ke hari berikutnya
 node dist/bin/stockbit-signals.js replay --send                # kirim satu ringkasan SIMULASI ke grup
 ```
 

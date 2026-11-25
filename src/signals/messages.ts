@@ -160,3 +160,35 @@ export function replayText(day: string, trades: ReplayTradeBrief[], analysed: nu
   lines.push("", "Satu hari simulasi tidak membuktikan strategi ini bekerja.", "", DISCLAIMER_ID);
   return lines.join("\n");
 }
+
+const HARI = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
+
+/** `Sen 23/11 10:05`, in WIB. */
+export function wibDayTime(iso: string): string {
+  const w = new Date(Date.parse(iso) + WIB_MS);
+  return `${HARI[w.getUTCDay()]} ${String(w.getUTCDate()).padStart(2, "0")}/${String(w.getUTCMonth() + 1).padStart(2, "0")} ${w.toISOString().slice(11, 16)}`;
+}
+
+/** The summary of a multi-day replay. Labelled SIMULASI throughout. */
+export function replayRangeText(
+  days: { day: string; analysed: number; bullish: string[] }[],
+  trades: ReplayTradeBrief[],
+): string {
+  const span = days.length === 1 ? days[0].day : `${days[0].day} s.d. ${days[days.length - 1].day}`;
+  const lines = [`🧪 SIMULASI BOT SINYAL, ${span}`, "(data diputar ulang, BUKAN sinyal live)", ""];
+  for (const d of days) lines.push(`${wibDayTime(`${d.day}T02:00:00Z`).slice(0, 9)}: condong positif ${d.bullish.length ? d.bullish.join(", ") : "-"}`);
+  lines.push("");
+  if (!trades.length) lines.push("Tidak ada sinyal BELI yang keluar: syarat analisis harian dan pemicu intraday tidak terpenuhi bersamaan.");
+  for (const tr of trades) {
+    const r = `${tr.returnPct >= 0 ? "+" : ""}${String(tr.returnPct).replace(".", ",")}%`;
+    lines.push(`🟢 ${tr.symbol} BELI ${wibDayTime(tr.buyAt)} di ${rp(tr.buy)}`);
+    if (tr.stillOpen) lines.push(`   Masih terbuka di akhir simulasi, posisi ${r}`);
+    else lines.push(`   🔴 JUAL ${tr.sellAt ? wibDayTime(tr.sellAt) : "?"} di ${rp(tr.sell as number)} (${EXIT_SHORT[tr.exitKind ?? ""] ?? tr.exitKind}), hasil ${r}`);
+  }
+  if (trades.length) {
+    const avg = trades.reduce((s, x) => s + x.returnPct, 0) / trades.length;
+    lines.push("", `Rata-rata hasil: ${avg >= 0 ? "+" : ""}${avg.toFixed(2).replace(".", ",")}% per sinyal (belum termasuk fee).`);
+  }
+  lines.push("", "Simulasi beberapa hari tidak membuktikan strategi ini bekerja.", "", DISCLAIMER_ID);
+  return lines.join("\n");
+}
