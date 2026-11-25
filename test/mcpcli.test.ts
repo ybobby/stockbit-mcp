@@ -164,6 +164,7 @@ const SHIPPED_BINS = [
   "stockbit-live",
   "stockbit-alerts",
   "stockbit-batch",
+  "stockbit-signals",
 ] as const;
 
 test("every shipped bin answers --version with the same version, and runs nothing", async () => {

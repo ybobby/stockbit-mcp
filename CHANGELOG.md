@@ -12,6 +12,17 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
 
 ### Added
 
+- `stockbit-signals`: BUY/SELL signals to Telegram, all session. Signals only: no order route was
+  added and the bin accepts no PIN (ADR-0012). A BUY needs the morning `analyze` verdict (bullish,
+  score and confidence floors, broker flow not negative) AND an intraday trigger (a break of
+  yesterday's high, or a whale-watch alert while the price is up), refuses to chase or buy near ARA,
+  and carries an ATR stop and 1.5R/3R targets on the tick grid. Open signals get SELL messages on
+  stop, targets, a breakeven after target 1, a bearish morning, selling pressure, or ten idle days.
+  Limits keep the feed readable (3 BUYs a day, 5 open, one per symbol per day, a cooldown); SELLs are
+  never limited. An optional Claude review (`ANTHROPIC_API_KEY`) may veto a BUY and add an Indonesian
+  note, but cannot create a signal or change a number, and a note quoting a number absent from the
+  evidence is dropped. Signals are journalled locally (not in the paper ledger) for a Friday recap.
+  Guide: [`docs/SIGNALS.md`](docs/SIGNALS.md).
 - `stockbit-live watch`: the live detectors run all session and every alert the alert engine lets
   through is sent to Telegram. `signals` answered one question and exited, which is the wrong shape
   for "buzz my phone when large money lands". No detector or threshold changed; the loop adds the day

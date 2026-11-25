@@ -75,6 +75,7 @@ and what remains a deployment step.
 | Separate local simulated ledger | `paper_*` |
 | Local alerts, Pine scripts and saved read workflows | `alerts`, `pine`, `workflows` |
 | Intraday large-transaction ("whale") alerts to Telegram, all session | `stockbit-live watch` — see [Whale watch](docs/WHALE-WATCH.md) |
+| BUY/SELL signals to Telegram (signals only, no orders) | `stockbit-signals run` — see [Signal bot](docs/SIGNALS.md) |
 
 This is the supported API surface, not a promise that every feature on Stockbit's website has an
 equivalent tool. Feature entitlements, undocumented upstream changes, login and browser availability
