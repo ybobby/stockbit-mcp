@@ -90,6 +90,18 @@ supaya akun Anda tidak membanjiri API yang tidak resmi ini.
 
 ### Flag
 
+- `--wide`: selain 100 saham top-stock, pantau juga daftar **top nilai, top volume, dan top
+  frekuensi** dari Movers Stockbit (masing-masing maksimal 50 saham, jadi 3 request tambahan per
+  pass). Ini untuk saham murah yang transaksinya banyak secara lot tapi kecil secara rupiah, yang
+  hampir tidak pernah masuk top-stock. Saham yang hanya datang dari daftar Movers:
+  - memakai batas transaksi besar Rp100 juta per window, lebih rendah dari batas biasa Rp300 juta,
+  - mendapat 4 dari 12 slot order book, dipilih berdasarkan lot terbanyak di window itu (slot yang
+    tidak terpakai kembali ke saham top-stock, jadi jumlah request order book tetap 12),
+  - alert-nya diberi keterangan "Saham ini masuk lewat daftar top ... Stockbit, di luar 100 saham
+    utama".
+  Kecepatan data daftar Movers belum pernah diukur seperti top-stock. Baris `pass` di log mencatat
+  `moversOnly`, yaitu berapa saham yang datang dari daftar Movers saja.
+
 - `--dry-run`: deteksi dan cetak, tanpa mengirim ke Telegram.
 - `--no-context`: jangan tambahkan ringkasan broker kemarin di bawah alert.
 - `--always`: tetap polling di luar jam bursa. Hanya untuk uji coba, karena pasar yang tutup akan

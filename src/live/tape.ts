@@ -63,9 +63,23 @@ export function readRaw(value: unknown): number | null {
   return null;
 }
 
+/**
+ * Where a sample was read from.
+ *
+ * `top-stock` and the movers lists report DIFFERENT figures for the same symbol at the same moment
+ * (measured 2026-11-25 after the close: BMRI 27.2B on top-stock against 524.3B on the movers
+ * lists), so a delta is only ever taken between two samples from the same source. Differencing
+ * across sources would report the gap between two services as a trade.
+ */
+export type SampleSource = "top-stock" | "movers";
+
 /** One symbol at one instant. Cumulative-since-open figures, exactly as the exchange reports them. */
 export interface SymbolSample {
   symbol: string;
+  /** Absent means `top-stock`, which is what every sample was before the movers lists existed. */
+  source?: SampleSource;
+  /** For a movers sample: which lists it appeared on (`value`, `volume`, `frequency`). */
+  lists?: string[];
   /** Cumulative traded VALUE in rupiah since the session opened. */
   value: number;
   /** Cumulative traded LOTS since the session opened. One IDX lot is 100 shares. */
@@ -114,6 +128,10 @@ export interface TradeDelta {
    *   individual one. An alert built on this must say so.
    */
   confidence: "single" | "few" | "averaged" | "none";
+  /** Which source both samples came from. Absent means `top-stock`. */
+  source?: SampleSource;
+  /** For a movers delta: the lists the symbol was on at the later snapshot. */
+  lists?: string[];
 }
 
 /**
@@ -139,9 +157,62 @@ export function snapshotFromTopStock(rows: unknown[], at = Date.now()): MarketSn
       lot: lot ?? 0,
       frequency,
       average: readRaw(r.average),
+      source: "top-stock",
     });
   }
   return { at, symbols };
+}
+
+/** One movers list as fetched: its friendly name and its raw rows. */
+export interface MoversList {
+  list: string;
+  rows: unknown[];
+}
+
+/**
+ * Turn Stockbit's market-mover rows into samples.
+ *
+ * Rows carry the code under `stock_detail.code` and cumulative `value`, `volume` and `frequency`
+ * for the day. `volume` is in LOTS: checked 2026-11-25 against value ÷ price ÷ 100 on BBCA
+ * (1,646,496 vs 1,639,674), GOTO (59,080,490 vs 59,096,154) and TLKM (1,893,542 vs 1,902,312),
+ * the small gaps being the day's average price against the last one.
+ *
+ * A symbol on several lists is one sample with every list recorded. A row without a usable code,
+ * value or frequency is skipped, never zero-filled, for the reason `snapshotFromTopStock` gives.
+ */
+export function samplesFromMovers(lists: MoversList[]): Map<string, SymbolSample> {
+  const out = new Map<string, SymbolSample>();
+  for (const { list, rows } of lists) {
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      const detail = (r.stock_detail ?? {}) as Record<string, unknown>;
+      const symbol = typeof detail.code === "string" ? detail.code.trim().toUpperCase() : "";
+      const value = readRaw(r.value);
+      const lot = readRaw(r.volume);
+      const frequency = readRaw(r.frequency);
+      if (!symbol || value === null || frequency === null || lot === null) continue;
+      const seen = out.get(symbol);
+      if (seen) {
+        if (!seen.lists?.includes(list)) seen.lists = [...(seen.lists ?? []), list];
+        continue;
+      }
+      out.set(symbol, { symbol, value, lot, frequency, average: null, source: "movers", lists: [list] });
+    }
+  }
+  return out;
+}
+
+/**
+ * Add movers samples to a top-stock snapshot, for the symbols top-stock does not already carry.
+ *
+ * top-stock wins wherever both have a symbol: it is the source measured live, and keeping one
+ * source per symbol is what lets `diffSnapshots` refuse cross-source deltas.
+ */
+export function widenSnapshot(base: MarketSnapshot, extra: Map<string, SymbolSample>): MarketSnapshot {
+  const symbols = new Map(base.symbols);
+  for (const [symbol, sample] of extra) if (!symbols.has(symbol)) symbols.set(symbol, sample);
+  return { at: base.at, symbols };
 }
 
 /**
@@ -159,6 +230,8 @@ export function diffSnapshots(before: MarketSnapshot, after: MarketSnapshot): Tr
   for (const [symbol, now] of after.symbols) {
     const then = before.symbols.get(symbol);
     if (!then) continue;
+    // Two services, two sets of figures for the same symbol. See `SampleSource`.
+    if ((then.source ?? "top-stock") !== (now.source ?? "top-stock")) continue;
 
     const value = now.value - then.value;
     const trades = now.frequency - then.frequency;
@@ -180,6 +253,7 @@ export function diffSnapshots(before: MarketSnapshot, after: MarketSnapshot): Tr
       sessionValue: now.value,
       sessionFrequency: now.frequency,
       confidence: trades === 0 ? "none" : trades === 1 ? "single" : trades <= 5 ? "few" : "averaged",
+      ...(now.source === "movers" ? { source: "movers" as const, lists: now.lists ?? [] } : {}),
     });
   }
 
@@ -194,7 +268,7 @@ export function looksLikeSessionReset(before: MarketSnapshot, after: MarketSnaps
   let compared = 0;
   for (const [symbol, now] of after.symbols) {
     const then = before.symbols.get(symbol);
-    if (!then) continue;
+    if (!then || (then.source ?? "top-stock") !== (now.source ?? "top-stock")) continue;
     compared++;
     if (now.value < then.value) dropped++;
   }

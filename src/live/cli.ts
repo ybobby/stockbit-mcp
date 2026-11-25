@@ -41,6 +41,7 @@ export const LIVE_COMMANDS: CommandTable = {
     usage: "<BBCA,ANTM|watchlist|all> <30s|5m> [prompt]",
     flags: {
       "--always": "run even outside IDX hours",
+      "--wide": "also watch Stockbit's top value/volume/frequency movers lists (cheap, high-lot stocks)",
       "--pretty": "indented JSON, for reading by eye",
     },
     positionals: [
@@ -56,6 +57,7 @@ export const LIVE_COMMANDS: CommandTable = {
       "--dry-run": "detect and print, but send nothing to Telegram",
       "--no-context": "skip the previous session's broker summary under each alert",
       "--always": "poll even outside IDX hours (testing only: a shut market reads as flat)",
+      "--wide": "also watch Stockbit's top value/volume/frequency movers lists (cheap, high-lot stocks)",
       "--pretty": "indented JSON, for reading by eye",
     },
     positionals: [

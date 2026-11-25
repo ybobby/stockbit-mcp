@@ -301,6 +301,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       type: "pass",
       at: now.toISOString(),
       symbolsSeen: result.symbolsSeen,
+      ...(result.moversOnly !== undefined ? { moversOnly: result.moversOnly } : {}),
       baseline: result.deltas === null,
       ...(result.reason ? { reason: result.reason } : {}),
       detected: result.signals.length,
