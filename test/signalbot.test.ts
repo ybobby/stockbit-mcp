@@ -301,3 +301,35 @@ test("the Claude Code reviewer reads claude -p output and never passes the API k
     else process.env.ANTHROPIC_API_KEY = prev;
   }
 });
+
+import { minuteSlots, spreadOverSession } from "../src/signals/replay.ts";
+
+test("session minutes skip the break (Friday's is longer) and the closing auction", () => {
+  const wed = minuteSlots("2026-11-25");
+  assert.equal(wed.length, 180 + 140);
+  assert.equal(wed[0], "2026-11-25T02:00:00.000Z"); // 09:00 WIB
+  assert.equal(wed[180], "2026-11-25T06:30:00.000Z"); // 13:30 WIB
+  assert.equal(wed[wed.length - 1], "2026-11-25T08:49:00.000Z"); // 15:49 WIB
+  assert.equal(minuteSlots("2026-11-27").length, 150 + 110);
+  const pts = spreadOverSession("2026-11-25", [1, 2, 3, 4]);
+  assert.deepEqual(pts.map((p) => p.at), [wed[0], wed[80], wed[160], wed[240]]);
+});
+
+test("no new BUY outside the entry window, but exits still run", async () => {
+  const at = (hhmm: string) => new Date(`2026-11-25T${hhmm}:00+07:00`).toISOString();
+  const late = await replayDay({
+    day: "2026-11-25",
+    contexts: new Map([["TEST", ctx()]]),
+    series: new Map([["TEST", [{ at: at("15:35"), price: 1020 }, { at: at("15:45"), price: 1030 }]]]),
+    whales: () => [],
+  });
+  assert.equal(late.trades.length, 0);
+  const early = await replayDay({
+    day: "2026-11-25",
+    contexts: new Map([["TEST", ctx()]]),
+    series: new Map([["TEST", [{ at: at("15:00"), price: 1020 }, { at: at("15:45"), price: 950 }]]]),
+    whales: () => [],
+  });
+  assert.equal(early.trades[0].exitKind, "stop");
+  assert.equal(early.trades[0].sellAt, at("15:45"));
+});

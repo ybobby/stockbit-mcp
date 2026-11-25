@@ -23,6 +23,7 @@ Lalu ada penyaring:
 - Tidak mengejar: saham yang sudah naik >7% hari ini, atau dekat ARA, dilewati.
 - Stop loss = 1,5× ATR di bawah harga (minimal 2%, maksimal 8%), tidak di bawah terendah kemarin.
 - Target 1 = 1,5R, target 2 = 3R (R = jarak ke stop loss). Semua harga dibulatkan ke fraksi IDX.
+- Sinyal BELI baru hanya antara 09:05 dan 15:30 WIB (sinyal JUAL tetap dicek sampai tutup).
 - Maksimal 3 sinyal BELI per hari, 5 sinyal terbuka sekaligus, satu sinyal per saham per hari, dan
   jeda 3 hari bursa setelah sinyal suatu saham ditutup.
 
@@ -117,7 +118,9 @@ node dist/bin/stockbit-signals.js replay --send                # kirim satu ring
 ```
 
 Analisis pagi pada simulasi hanya memakai data sampai kemarin, supaya tidak "menyontek" data sore.
-Harga diambil dari titik grafik intraday. Satu hari simulasi tidak membuktikan strategi bekerja.
+Untuk hari ini, harga diambil dari data per menit; jam-nya **perkiraan** karena data itu tidak
+membawa jam (titik dibagi rata ke menit perdagangan). Untuk hari lain, dipakai titik grafik intraday
+yang lebih jarang. `--all-series` menyertakan grafik semua saham di output. Satu hari simulasi tidak membuktikan strategi bekerja.
 
 ### Perintah lain
 

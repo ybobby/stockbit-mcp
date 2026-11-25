@@ -56,6 +56,13 @@ export interface SignalBotOptions {
   maxBuysPerDay?: number;
   maxOpen?: number;
   cooldownDays?: number;
+  /**
+   * New BUYs only between these WIB times (`HH:MM`). The open is noisy and the last minutes run into
+   * the closing auction, where a normal order does not fill at the price the message would quote.
+   * Exits are checked all session regardless.
+   */
+  entryFrom?: string;
+  entryUntil?: string;
   /** Send the weekly recap on Friday at or after this WIB time (`HH:MM`). */
   recapAt?: string;
   failureNotice?: number;
@@ -95,6 +102,8 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
   const maxOpen = opts.maxOpen ?? 5;
   const cooldownDays = opts.cooldownDays ?? 3;
   const recapAt = opts.recapAt ?? "16:15";
+  const entryFrom = opts.entryFrom ?? "09:05";
+  const entryUntil = opts.entryUntil ?? "15:30";
   const failureNotice = opts.failureNotice ?? 3;
   const summary: SignalBotSummary = { passes: 0, buys: 0, exits: 0, vetoes: 0, sendFailures: 0, ended: "stopped" };
 
@@ -228,8 +237,10 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
       await send(exitText(snapshot, exit, now), { type: "exit", at: now.toISOString(), id: open.id, symbol: open.symbol, kind: exit.kind, price: exit.price });
     }
 
-    // Entries, within the limits.
-    for (const symbol of opts.symbols) {
+    // Entries, within the limits and the entry window.
+    const hhmm = wibParts(now).hhmm;
+    const entriesOpen = hhmm >= entryFrom && hhmm < entryUntil;
+    for (const symbol of entriesOpen ? opts.symbols : []) {
       if (buysToday >= maxBuysPerDay || journal.open.length >= maxOpen) break;
       if (touchedToday.has(symbol) || journal.open.some((s) => s.symbol === symbol)) continue;
       const last = journal.lastClosed[symbol];

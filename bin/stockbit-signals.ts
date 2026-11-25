@@ -18,6 +18,7 @@
 import * as core from "../src/core/index.js";
 import { getSentimentStream } from "../src/core/stream.js";
 import { getSeriesBars } from "../src/core/market.js";
+import { getIntradayPrices } from "../src/core/pricefeed.js";
 import { isWithinPollingWindow, wibTodayIso } from "../src/core/sessionclock.js";
 import { CliParseError, formatUsage, gateCommandLine, isHelpToken, isVersionToken } from "../src/cliargs.js";
 import { VERSION } from "../src/version.js";
@@ -30,7 +31,7 @@ import { analyze, type AnalyzeDeps } from "../src/analysis/analyze.js";
 import { DEFAULT_UNIVERSE, SIGNALS_BIN, SIGNALS_COMMANDS, SIGNALS_EPILOGUE } from "../src/signals/cli.js";
 import { buildContext, tickFromQuote, whalesFromLog } from "../src/signals/context.js";
 import { claudeCodeReviewer, claudeReviewer, DEFAULT_MODEL, type AiReviewer } from "../src/signals/ai.js";
-import { replayDay, type PricePoint } from "../src/signals/replay.js";
+import { replayDay, spreadOverSession, type PricePoint } from "../src/signals/replay.js";
 import type { DailyContext } from "../src/signals/engine.js";
 import { journalPath, loadJournal, recap, saveJournal } from "../src/signals/ledger.js";
 import { mondayOf, runSignalBot } from "../src/signals/loop.js";
@@ -247,7 +248,12 @@ async function run(): Promise<void> {
 }
 
 async function replay(): Promise<void> {
-  const [, scopeToken, dateToken] = positionals();
+  // The scope is optional, so a lone date (`replay 2026-11-25`) is the date, not a ticker list.
+  let [, scopeToken, dateToken]: (string | undefined)[] = positionals();
+  if (scopeToken && /^\d{4}-\d{2}-\d{2}$/.test(scopeToken) && dateToken === undefined) {
+    dateToken = scopeToken;
+    scopeToken = undefined;
+  }
   const day = dateToken ?? wibTodayIso();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) fail("bad-arguments", `Date must be YYYY-MM-DD, got ${JSON.stringify(day)}.`);
   let symbols: string[];
@@ -266,18 +272,33 @@ async function replay(): Promise<void> {
   const contexts = new Map<string, DailyContext>();
   const series = new Map<string, PricePoint[]>();
   const skipped: Record<string, string> = {};
+  const sources: Record<string, string> = {};
   for (const symbol of symbols) {
     process.stderr.write(`replay ${day}: ${symbol}\n`);
     try {
       const report = await analyze({ symbol, includeSentiment: false }, deps);
       const bars = await deps.bars(symbol, 40);
       contexts.set(symbol, buildContext(report, bars.bars, day));
-      const chart = await getSeriesBars(symbol, "1w");
-      const pts: PricePoint[] = [];
-      for (const b of chart.bars) {
-        if (!String(b.date).startsWith(day)) continue;
-        const at = jakartaIso(String(b.date));
-        if (at && b.close > 0) pts.push({ at, price: b.close });
+      let pts: PricePoint[] = [];
+      // Today: the one-minute close series, the finest this server reads. It carries no clock, so
+      // times are spread over the session's trading minutes (see minuteSlots) and are approximate.
+      if (day === wibTodayIso()) {
+        const minute = await getIntradayPrices(symbol, 1);
+        const closes = minute.prices.filter((p): p is number => p !== null && p > 0);
+        if (closes.length >= 30) {
+          pts = spreadOverSession(day, closes);
+          sources[symbol] = `1m (${closes.length} titik, jam perkiraan)`;
+        }
+      }
+      // Another day, or too few minute points: the chart's timestamped intraday points.
+      if (!pts.length) {
+        const chart = await getSeriesBars(symbol, "1w");
+        for (const b of chart.bars) {
+          if (!String(b.date).startsWith(day)) continue;
+          const at = jakartaIso(String(b.date));
+          if (at && b.close > 0) pts.push({ at, price: b.close });
+        }
+        if (pts.length) sources[symbol] = `chart 1w (${pts.length} titik)`;
       }
       if (pts.length) series.set(symbol, pts);
       else skipped[symbol] = "no intraday points for that day";
@@ -300,15 +321,18 @@ async function replay(): Promise<void> {
   const summaryText = replayText(day, result.trades, result.analysed, result.bullish);
   if (telegram) delivered = (await postTelegram(telegram, summaryText)) ?? "sent";
 
-  // Series only for the symbols that traded, so the output stays small enough to chart.
+  // Series only for the symbols that traded unless --all-series, thinned to one point per 5 minutes.
   const traded = new Set(result.trades.map((t) => t.symbol));
+  const keep = (s: string) => flag("all-series") || traded.has(s);
+  const thin = (pts: PricePoint[]) => pts.filter((p, i) => i === pts.length - 1 || new Date(p.at).getUTCMinutes() % 5 === 0);
   emit({
     ok: true,
     ...result,
     ai: ai.label,
     skipped,
     contexts: [...contexts.values()].map((c) => ({ symbol: c.symbol, lean: c.lean, score: c.score, confidence: c.confidence, prevHigh: c.prevHigh })),
-    series: Object.fromEntries([...series].filter(([s]) => traded.has(s))),
+    sources,
+    series: Object.fromEntries([...series].filter(([s]) => keep(s)).map(([s, pts]) => [s, thin(pts)])),
     summaryText,
     telegram: telegram ? delivered : "not sent (pass --send)",
   });

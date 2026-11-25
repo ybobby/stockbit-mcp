@@ -68,6 +68,40 @@ export interface ReplayResult {
   limits: string[];
 }
 
+/**
+ * The IDX continuous-trading minutes of `day`, as ISO times: 09:00–11:59, then 13:30 (Friday 14:00)
+ * to 15:49. The pre-closing auction is left out: nobody fills a normal order there.
+ */
+export function minuteSlots(day: string): string[] {
+  const friday = new Date(`${day}T00:00:00Z`).getUTCDay() === 5;
+  const ranges: [number, number][] = [
+    [9 * 60, (friday ? 11 * 60 + 30 : 12 * 60) - 1],
+    [friday ? 14 * 60 : 13 * 60 + 30, 15 * 60 + 49],
+  ];
+  const out: string[] = [];
+  for (const [a, b] of ranges) {
+    for (let m = a; m <= b; m++) {
+      const hh = String(Math.floor(m / 60)).padStart(2, "0");
+      const mm = String(m % 60).padStart(2, "0");
+      out.push(new Date(`${day}T${hh}:${mm}:00+07:00`).toISOString());
+    }
+  }
+  return out;
+}
+
+/**
+ * Give an UNTIMED close series approximate times, spread evenly across the session's trading
+ * minutes. The minute route carries no clock (see `getIntradayPrices`), so this is a labelled
+ * approximation: right in order, roughly right in time, and never presented as exact.
+ */
+export function spreadOverSession(day: string, closes: number[]): PricePoint[] {
+  const slots = minuteSlots(day);
+  return closes.map((price, i) => ({
+    at: slots[Math.min(slots.length - 1, Math.floor((i * slots.length) / closes.length))],
+    price,
+  }));
+}
+
 function lastAtOrBefore(points: PricePoint[], t: number): PricePoint | null {
   let best: PricePoint | null = null;
   for (const p of points) {

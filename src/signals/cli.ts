@@ -44,6 +44,7 @@ export const SIGNALS_COMMANDS: CommandTable = {
     usage: "[BBCA,ANTM|watchlist[:Name]] [YYYY-MM-DD]",
     flags: {
       "--send": "post one SIMULASI summary to Telegram",
+      "--all-series": "include every symbol's price series in the output, not only the traded ones",
       "--pretty": "indented JSON",
     },
     valueFlags: {
