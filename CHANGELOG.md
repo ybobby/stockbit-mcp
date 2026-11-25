@@ -10,6 +10,17 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
 
 ## [Unreleased]
 
+### Added
+
+- `stockbit-live watch`: the live detectors run all session and every alert the alert engine lets
+  through is sent to Telegram. `signals` answered one question and exited, which is the wrong shape
+  for "buzz my phone when large money lands". No detector or threshold changed; the loop adds the day
+  boundary (fresh baseline and alert budget each morning), the previous session's broker summary under
+  each alert, labelled end-of-day and dated so it cannot read as live, and loud-once failure: an
+  expired session sends one message and exits 3 so a supervisor does not restart into it, and three
+  failed passes in a row say the quiet is not a quiet market. Events go to stdout as NDJSON and to
+  `whale-alerts.log` before Telegram is tried. Guide: [`docs/WHALE-WATCH.md`](docs/WHALE-WATCH.md).
+
 ### Fixed
 
 - Login capture and HAR import now accept main-session responses from `exodus.api.stockbit.com`,
