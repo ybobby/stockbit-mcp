@@ -282,7 +282,7 @@ async function signals(): Promise<void> {
   // Trading seconds elapsed today, for the "what should this window have carried" baseline.
   const elapsedSeconds = () => elapsedTradingSeconds(new Date());
 
-  const watcher = new SignalWatcher({ scope: resolved, spec, elapsedSeconds });
+  const watcher = new SignalWatcher({ scope: resolved, spec, elapsedSeconds, wide: flag("wide") });
 
   try {
     await watcher.pass(new Date()); // baseline; produces no deltas by design
@@ -386,12 +386,13 @@ async function watch(): Promise<void> {
   for (const line of describeSpec(spec)) process.stderr.write(`prompt: ${line}\n`);
   for (const line of spec.downgrades) process.stderr.write(`prompt: ${line}\n`);
   process.stderr.write(
-    `whale watch: ${describeScope(resolved)}, ${describeInterval(interval)}${dryRun ? ", DRY RUN (nothing sent)" : ", alerts to Telegram"}; log at ${whaleLogPath()}. Ctrl-C to stop.\n`,
+    `whale watch: ${describeScope(resolved)}${flag("wide") ? " plus Stockbit's top value/volume/frequency movers lists (up to 150 more, 3 extra requests per poll)" : ""}, ${describeInterval(interval)}${dryRun ? ", DRY RUN (nothing sent)" : ", alerts to Telegram"}; log at ${whaleLogPath()}. Ctrl-C to stop.\n`,
   );
 
   const summary = await runWhaleWatch(
     {
-      newWatcher: () => new SignalWatcher({ scope: resolved, spec, elapsedSeconds: () => elapsedTradingSeconds(new Date()) }),
+      newWatcher: () =>
+        new SignalWatcher({ scope: resolved, spec, elapsedSeconds: () => elapsedTradingSeconds(new Date()), wide: flag("wide") }),
       now: () => new Date(),
       sleep: nap,
       inWindow: (now) => flag("always") || isWithinPollingWindow(now),

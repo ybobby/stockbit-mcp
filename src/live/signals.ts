@@ -66,6 +66,12 @@ export interface Thresholds {
   rate: number;
   /** #1 — absolute rupiah floor, so a thin stock cannot fire on noise. */
   minWindowValue: number;
+  /**
+   * #1 — the same floor for a symbol that only the movers lists carry (`--wide`). Those are mostly
+   * cheap, high-lot names that rarely move Rp300 juta in a minute, so the top-stock floor would
+   * keep them silent. Absent means `minWindowValue`.
+   */
+  minWindowValueWide?: number;
   /** #1 — a window needs at least this many prints to have a meaningful mean. */
   minWindowTrades: number;
   /** #1, and the warm-up gate generally — a symbol needs this much session history. */
@@ -99,6 +105,7 @@ export const DEFAULTS: Thresholds = {
   concentration: 5,
   rate: 3,
   minWindowValue: 300_000_000,
+  minWindowValueWide: 100_000_000,
   minWindowTrades: 3,
   minSessionTrades: 200,
   bandDepthMultiple: 3,

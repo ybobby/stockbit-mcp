@@ -28,10 +28,52 @@ import { getJson } from "../http/client.js";
 import {
   diffSnapshots,
   looksLikeSessionReset,
+  samplesFromMovers,
   snapshotFromTopStock,
+  widenSnapshot,
   type MarketSnapshot,
+  type MoversList,
   type TradeDelta,
 } from "./tape.js";
+
+/**
+ * The movers lists `--wide` adds, by friendly name and wire value.
+ *
+ * top-stock is ranked by its own `value` field, so a cheap stock that trades a great many lots for
+ * little rupiah rarely makes it. These three lists are where such stocks appear. Each returns at
+ * most 50 rows (asking for more still gives 50). `value` is here too because on 2026-11-25 the
+ * movers top-value list carried BBCA and BBRI while top-stock did not.
+ *
+ * Their freshness against the exchange has NOT been measured the way top-stock's was. A list that
+ * turned out to lag would give smaller, later deltas for the symbols only it carries; it cannot
+ * make up a trade.
+ */
+export const WIDE_LISTS: readonly { list: string; wire: string }[] = [
+  { list: "value", wire: "MOVER_TYPE_TOP_VALUE" },
+  { list: "volume", wire: "MOVER_TYPE_TOP_VOLUME" },
+  { list: "frequency", wire: "MOVER_TYPE_TOP_FREQUENCY" },
+];
+
+/**
+ * Read the movers lists. A list that fails is reported in `warnings` and left out: losing the
+ * extra symbols for one poll is better than losing the whole poll, which top-stock still covers.
+ */
+export async function takeMoversLists(): Promise<{ lists: MoversList[]; warnings: string[] }> {
+  const lists: MoversList[] = [];
+  const warnings: string[] = [];
+  for (const { list, wire } of WIDE_LISTS) {
+    try {
+      const body = await getJson("marketMover", { params: { mover_type: wire, limit: 50 } });
+      const data = (body as { data?: { mover_list?: unknown } } | null)?.data;
+      const rows = Array.isArray(data?.mover_list) ? (data.mover_list as unknown[]) : [];
+      if (!rows.length) warnings.push(`movers ${list}: no rows`);
+      lists.push({ list, rows });
+    } catch (err) {
+      warnings.push(`movers ${list}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { lists, warnings };
+}
 
 /**
  * Find the row array in a Stockbit envelope.
@@ -91,6 +133,15 @@ export interface PollResult {
   /** Why there is no delta, when there is none. */
   reason?: "first-poll" | "session-reset";
   symbolsSeen: number;
+  /** With `wide`: how many symbols came only from the movers lists. */
+  moversOnly?: number;
+  /** With `wide`: movers lists that could not be read this poll. */
+  warnings?: string[];
+}
+
+export interface MarketWatcherOptions {
+  /** Also read the movers lists (value, volume, frequency) and watch the symbols they add. */
+  wide?: boolean;
 }
 
 /**
@@ -103,24 +154,33 @@ export interface PollResult {
 export class MarketWatcher {
   private previous: MarketSnapshot | null = null;
 
+  constructor(private readonly opts: MarketWatcherOptions = {}) {}
+
   /** Poll once and report what traded since the last poll. */
   async poll(now = Date.now()): Promise<PollResult> {
-    const snapshot = await takeMarketSnapshot(now);
+    let snapshot = await takeMarketSnapshot(now);
+    let wide: Pick<PollResult, "moversOnly" | "warnings"> = {};
+    if (this.opts.wide) {
+      const { lists, warnings } = await takeMoversLists();
+      const before = snapshot.symbols.size;
+      snapshot = widenSnapshot(snapshot, samplesFromMovers(lists));
+      wide = { moversOnly: snapshot.symbols.size - before, warnings };
+    }
     const previous = this.previous;
     this.previous = snapshot;
 
     if (!previous) {
-      return { at: snapshot.at, deltas: null, reason: "first-poll", symbolsSeen: snapshot.symbols.size };
+      return { at: snapshot.at, deltas: null, reason: "first-poll", symbolsSeen: snapshot.symbols.size, ...wide };
     }
 
     // A new trading day zeroes every cumulative counter. Differencing across that boundary would
     // report the whole previous session as a single window of activity, so the baseline is replaced
     // and this poll produces nothing. The NEXT poll is the first honest one.
     if (looksLikeSessionReset(previous, snapshot)) {
-      return { at: snapshot.at, deltas: null, reason: "session-reset", symbolsSeen: snapshot.symbols.size };
+      return { at: snapshot.at, deltas: null, reason: "session-reset", symbolsSeen: snapshot.symbols.size, ...wide };
     }
 
-    return { at: snapshot.at, deltas: diffSnapshots(previous, snapshot), symbolsSeen: snapshot.symbols.size };
+    return { at: snapshot.at, deltas: diffSnapshots(previous, snapshot), symbolsSeen: snapshot.symbols.size, ...wide };
   }
 
   /** Throw the baseline away, so the next poll starts fresh. */

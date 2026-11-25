@@ -12,6 +12,19 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
 
 ### Added
 
+- `stockbit-live watch|signals --wide`: also reads Stockbit's top value, volume and frequency
+  movers lists (`/order-trade/market-mover`, 50 rows each, three extra GETs per poll) and watches
+  the symbols they add beyond top-stock's hundred. top-stock ranks by rupiah, so cheap stocks that
+  trade a great many lots rarely made it in. **Observed** 2026-11-25 after the close: movers
+  `volume` is in lots (value ÷ price ÷ 100 matched within 0.5% on BBCA, GOTO and TLKM), and the two
+  sources report different figures for the same symbol (BMRI 27.2B on top-stock, 524.3B on movers),
+  so a delta is only ever taken between two samples from the same source and top-stock wins where
+  both carry a symbol. Movers-only symbols use their own value-surge floor (`minWindowValueWide`,
+  Rp100 juta, against Rp300 juta), get 4 of the 12 order-book slots ranked by lots (unused slots go
+  back to top-stock symbols, so the request budget is unchanged), and every alert on one says so in
+  both languages. A movers list that fails is a warning in the pass's `errors`, not a failed pass.
+  Off by default. The movers lists' freshness against the exchange has not been measured the way
+  top-stock's was.
 - `stockbit-live watch`: the live detectors run all session and every alert the alert engine lets
   through is sent to Telegram. `signals` answered one question and exited, which is the wrong shape
   for "buzz my phone when large money lands". No detector or threshold changed; the loop adds the day
