@@ -13,6 +13,14 @@
  * SELL messages are never rate-limited: a person holding on the strength of a BUY must hear about
  * the stop.
  *
+ * ## Few requests, unevenly spaced
+ *
+ * The morning analysis reads every symbol once. After that, only the symbols that passed the daily
+ * gate (they are the only ones that can still produce a BUY today) and the open signals are polled,
+ * so a quiet day costs almost nothing. `pacingMs` puts a random pause between consecutive reads,
+ * `intervalJitter` varies the pass interval, and a rate-limit answer pauses the bot for
+ * `rateLimitPauseMs` instead of pushing on.
+ *
  * ## Nothing here trades
  *
  * It reads quotes, the daily analysis and the whale watch's own log, and it sends text.
@@ -21,6 +29,7 @@ import { wibTodayIso } from "../core/sessionclock.js";
 import type { AiReviewer } from "./ai.js";
 import {
   DEFAULT_CONFIG,
+  dailyGate,
   evaluateEntry,
   evaluateExit,
   weekdaysBetween,
@@ -47,6 +56,10 @@ export interface SignalBotDeps {
   saveJournal(journal: Journal): void;
   review?: AiReviewer;
   isAuthError(err: unknown): boolean;
+  /** A "slow down" answer from Stockbit (HTTP 429). Absent: never. */
+  isRateLimited?(err: unknown): boolean;
+  /** [0, 1). Absent: Math.random. */
+  random?(): number;
 }
 
 export interface SignalBotOptions {
@@ -68,6 +81,17 @@ export interface SignalBotOptions {
   failureNotice?: number;
   config?: SignalConfig;
   maxPasses?: number;
+  /**
+   * Poll every symbol all session, not only the ones that passed the morning's daily gate. Costs
+   * many more requests and cannot produce a BUY the narrow mode would miss.
+   */
+  watchAll?: boolean;
+  /** A random pause in [min, max] ms between consecutive Stockbit reads. Default none. */
+  pacingMs?: [number, number];
+  /** Each pass waits `intervalMs` ± this fraction, at random. Default 0. */
+  intervalJitter?: number;
+  /** How long to stop polling after a rate-limit answer. Default 15 minutes. */
+  rateLimitPauseMs?: number;
 }
 
 export interface SignalBotSummary {
@@ -77,6 +101,8 @@ export interface SignalBotSummary {
   vetoes: number;
   sendFailures: number;
   ended: "stopped" | "auth" | "max-passes";
+  /** Times Stockbit answered "too many requests". */
+  rateLimited: number;
 }
 
 const WIB_MS = 7 * 3600_000;
@@ -105,10 +131,38 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
   const entryFrom = opts.entryFrom ?? "09:05";
   const entryUntil = opts.entryUntil ?? "15:30";
   const failureNotice = opts.failureNotice ?? 3;
-  const summary: SignalBotSummary = { passes: 0, buys: 0, exits: 0, vetoes: 0, sendFailures: 0, ended: "stopped" };
+  const summary: SignalBotSummary = { passes: 0, buys: 0, exits: 0, vetoes: 0, sendFailures: 0, ended: "stopped", rateLimited: 0 };
+  const random = deps.random ?? Math.random;
+  const rateLimitPauseMs = opts.rateLimitPauseMs ?? 15 * 60_000;
+  const jitter = Math.min(Math.max(opts.intervalJitter ?? 0, 0), 0.9);
+  const isRateLimited = (err: unknown) => deps.isRateLimited?.(err) ?? false;
+  let reads = 0;
+  // Before every Stockbit read but the first of a burst: a short random pause.
+  const pace = async () => {
+    if (opts.pacingMs && reads++ > 0) {
+      const [lo, hi] = opts.pacingMs;
+      await deps.sleep(Math.round(lo + random() * Math.max(hi - lo, 0)));
+    }
+  };
+  const nextPass = () => deps.sleep(Math.round(opts.intervalMs * (1 + jitter * (2 * random() - 1))));
+  let rateNoticeDay: string | null = null;
+  const rateLimitedPause = async (now: Date, where: string) => {
+    summary.rateLimited++;
+    deps.record({ type: "rate-limited", where, at: now.toISOString(), pauseMs: rateLimitPauseMs });
+    const today = wibTodayIso(now);
+    if (rateNoticeDay !== today) {
+      rateNoticeDay = today;
+      await send(
+        `⏸️ Stockbit meminta bot memperlambat. Bot sinyal berhenti membaca harga ${Math.round(rateLimitPauseMs / 60_000)} menit, lalu lanjut sendiri.`,
+        { type: "rate-limit-notice", at: now.toISOString() },
+      );
+    }
+    await deps.sleep(rateLimitPauseMs);
+  };
 
   let day: string | null = null;
   let contexts = new Map<string, DailyContext>();
+  let candidates: string[] = [];
   let buysToday = 0;
   let touchedToday = new Set<string>();
   let failures = 0;
@@ -164,8 +218,11 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
       const held = deps.loadJournal().open.map((s) => s.symbol);
       const universe = [...new Set([...opts.symbols, ...held])];
       deps.record({ type: "day-started", day, symbols: universe.length, at: now.toISOString() });
+      reads = 0;
+      let limited = false;
       for (const symbol of universe) {
         if (deps.stopped()) break;
+        await pace();
         try {
           contexts.set(symbol, await deps.dailyContext(symbol));
         } catch (err) {
@@ -173,20 +230,37 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
             await authStop(now);
             return summary;
           }
+          if (isRateLimited(err)) {
+            limited = true;
+            break;
+          }
           deps.record({ type: "analysis-failed", symbol, error: msg(err) });
         }
       }
+      if (limited) {
+        // Analyse again after the pause, from scratch: a half-read morning would silently skip names.
+        day = null;
+        await rateLimitedPause(now, "analysis");
+        continue;
+      }
       const bullish = [...contexts.values()].filter((c) => c.lean === "bullish").map((c) => c.symbol);
-      deps.record({ type: "analysis-done", day, analysed: contexts.size, bullish });
+      candidates = opts.watchAll ? [...opts.symbols] : opts.symbols.filter((s) => {
+        const ctx = contexts.get(s);
+        return ctx !== undefined && dailyGate(ctx, cfg) === null;
+      });
+      deps.record({ type: "analysis-done", day, analysed: contexts.size, bullish, watching: candidates });
     }
 
     summary.passes++;
     const journal = deps.loadJournal();
     let changed = false;
-    const symbols = [...new Set([...journal.open.map((s) => s.symbol), ...opts.symbols])];
+    const symbols = [...new Set([...journal.open.map((s) => s.symbol), ...candidates])];
     const ticks = new Map<string, Tick>();
     let tickErrors = 0;
+    let limited = false;
+    reads = 0;
     for (const symbol of symbols) {
+      await pace();
       try {
         ticks.set(symbol, await deps.tick(symbol));
       } catch (err) {
@@ -194,9 +268,18 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
           await authStop(now);
           return summary;
         }
+        if (isRateLimited(err)) {
+          limited = true;
+          break;
+        }
         tickErrors++;
         deps.record({ type: "tick-failed", symbol, error: msg(err) });
       }
+    }
+
+    if (limited) {
+      await rateLimitedPause(now, "prices");
+      continue;
     }
 
     if (symbols.length > 0 && ticks.size === 0) {
@@ -208,7 +291,7 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
           { type: "outage", at: now.toISOString() },
         );
       }
-      await deps.sleep(opts.intervalMs);
+      await nextPass();
       continue;
     }
     if (announcedOutage) {
@@ -240,7 +323,7 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
     // Entries, within the limits and the entry window.
     const hhmm = wibParts(now).hhmm;
     const entriesOpen = hhmm >= entryFrom && hhmm < entryUntil;
-    for (const symbol of entriesOpen ? opts.symbols : []) {
+    for (const symbol of entriesOpen ? candidates : []) {
       if (buysToday >= maxBuysPerDay || journal.open.length >= maxOpen) break;
       if (touchedToday.has(symbol) || journal.open.some((s) => s.symbol === symbol)) continue;
       const last = journal.lastClosed[symbol];
@@ -290,7 +373,7 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
     }
 
     deps.record({ type: "pass", at: now.toISOString(), symbols: symbols.length, tickErrors, open: journal.open.length, buysToday, changed });
-    await deps.sleep(opts.intervalMs);
+    await nextPass();
   }
 
   return summary;

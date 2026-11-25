@@ -95,16 +95,30 @@ besar"; tanpa whale watch, bot sinyal tetap jalan dengan pemicu breakout saja.
 
 | Contoh | Artinya |
 | --- | --- |
-| `run` | 25 saham likuid bawaan, cek harga tiap 2 menit. |
-| `run watchlist 2m` | Watchlist default Stockbit Anda. |
+| `run` | 25 saham likuid bawaan, cek harga kandidat sekitar tiap 3 menit. |
+| `run watchlist 3m` | Watchlist default Stockbit Anda. |
 | `run BBCA,BMRI,ANTM 1m` | Saham tertentu, tiap 1 menit. |
 | `--max-buys 2 --max-open 4` | Ubah batas harian dan batas sinyal terbuka. |
 | `--ai claude-code` | Review AI memakai langganan Claude (tanpa biaya tambahan). |
 | `--no-ai` / `--ai off` | Matikan review AI walau API key ada. |
 | `--dry-run` | Cetak saja, tidak mengirim dan tidak menulis jurnal. |
+| `--watch-all` | Pantau semua saham seharian, bukan hanya kandidat. Request jauh lebih banyak. |
 
 `all` tidak diterima, karena setiap saham dianalisis tiap pagi dan seluruh pasar terlalu banyak
 request.
+
+### Jumlah request ke Stockbit
+
+Supaya pemakaian tetap wajar:
+
+- Pagi: setiap saham dianalisis sekali (sekitar 60-80 request untuk 25 saham).
+- Setelah itu hanya saham yang **lolos analisis pagi** (satu-satunya yang bisa memberi sinyal BELI hari
+  itu) dan sinyal yang masih terbuka yang dicek harganya. Hari tanpa kandidat hampir tanpa request.
+- Ada jeda acak 0,4-2,5 detik antar request, dan jarak antar putaran bervariasi ±25%.
+- Kalau Stockbit menjawab "terlalu banyak request" (429), bot berhenti membaca harga 15 menit, mengirim
+  satu pemberitahuan ke grup, lalu lanjut sendiri.
+
+Perkiraan total: sekitar 100-500 request per hari. Tetap ingat bahwa API ini tidak resmi.
 
 ### Simulasi satu hari (replay)
 

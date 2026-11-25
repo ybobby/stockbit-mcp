@@ -156,17 +156,17 @@ async function run(): Promise<void> {
   let symbols: string[];
   let intervalMs: number;
   try {
-    intervalMs = intervalToken ? parseInterval(intervalToken).ms : 120_000;
+    intervalMs = intervalToken ? parseInterval(intervalToken).ms : 180_000;
     symbols = await symbolsFor(scopeToken);
   } catch (err) {
     if (err instanceof ScopeParseError || err instanceof IntervalParseError) {
-      fail("bad-arguments", err.message, "Usage: stockbit-signals run [BBCA,ANTM|watchlist] [1m|2m|5m]");
+      fail("bad-arguments", err.message, "Usage: stockbit-signals run [BBCA,ANTM|watchlist] [1m|3m|5m]");
     }
     if (err instanceof StockbitError && err.kind === "auth") fail("auth", err.message, "Run stockbit-auth login.");
     throw err;
   }
   if (!symbols.length) fail("empty-scope", "Nothing to watch: the scope resolved to no symbols.");
-  if (intervalMs < 60_000) fail("bad-arguments", "The signal bot polls at most once a minute.", "Use 1m, 2m or 5m.");
+  if (intervalMs < 60_000) fail("bad-arguments", "The signal bot polls at most once a minute.", "Use 1m, 3m or 5m.");
 
   const dryRun = flag("dry-run");
   const telegram = telegramTargetFromEnv();
@@ -191,7 +191,7 @@ async function run(): Promise<void> {
   const analyzeDeps = liveAnalyzeDeps();
 
   process.stderr.write(
-    `signal bot: ${symbols.length} symbols, every ${Math.round(intervalMs / 1000)}s` +
+    `signal bot: ${symbols.length} symbols analysed each morning; ${flag("watch-all") ? "all" : "only the BUY candidates and open signals"} polled about every ${Math.round(intervalMs / 1000)}s` +
       `${dryRun ? ", DRY RUN (nothing sent)" : ", to Telegram"}; AI review ${ai.label}; ` +
       `journal ${journalPath()}. Ctrl-C to stop.\n`,
   );
@@ -234,10 +234,14 @@ async function run(): Promise<void> {
       saveJournal: dryRun ? () => {} : (j) => saveJournal(j),
       review: ai.review,
       isAuthError: (err) => err instanceof StockbitError && err.kind === "auth",
+      isRateLimited: (err) => err instanceof StockbitError && err.kind === "rate_limited",
     },
     {
       symbols,
       intervalMs,
+      watchAll: flag("watch-all"),
+      pacingMs: [400, 2500],
+      intervalJitter: 0.25,
       maxBuysPerDay: positiveInt("max-buys", 3),
       maxOpen: positiveInt("max-open", 5),
     },

@@ -12,6 +12,10 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
 
 ### Added
 
+- `stockbit-signals run` polls far less: after the morning analysis only the symbols that passed
+  the daily gate and the open signals are polled (`--watch-all` restores every symbol), the default
+  interval is 3m with ±25% jitter and a random 0.4-2.5s gap between reads, and a 429 from Stockbit
+  pauses polling for 15 minutes with one notice to the group instead of reading as an outage.
 - `stockbit-signals`: BUY/SELL signals to Telegram, all session. Signals only: no order route was
   added and the bin accepts no PIN (ADR-0012). A BUY needs the morning `analyze` verdict (bullish,
   score and confidence floors, broker flow not negative) AND an intraday trigger (a break of

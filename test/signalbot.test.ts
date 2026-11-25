@@ -239,6 +239,49 @@ test("an expired session sends one message and stops", async () => {
   assert.match(h.sent[0], /login/);
 });
 
+test("after the morning, only the BUY candidates and open signals are polled", async () => {
+  const h = harness([1005]);
+  const polled: string[] = [];
+  h.deps.dailyContext = async (symbol) => ctx({ symbol, lean: symbol === "UP" ? "bullish" : "bearish" });
+  h.deps.tick = async (symbol) => {
+    polled.push(symbol);
+    return { price: 1005, changePct: null };
+  };
+  await runSignalBot(h.deps, { symbols: ["UP", "DOWN", "FLAT"], intervalMs: 1, maxPasses: 3 });
+  assert.deepEqual(polled, ["UP", "UP", "UP"]);
+
+  polled.length = 0;
+  await runSignalBot(h.deps, { symbols: ["UP", "DOWN", "FLAT"], intervalMs: 1, maxPasses: 1, watchAll: true });
+  assert.deepEqual(polled, ["UP", "DOWN", "FLAT"]);
+});
+
+test("a rate-limit answer pauses polling and says so once a day; reads are randomly spaced", async () => {
+  const h = harness([1005]);
+  const slept: number[] = [];
+  h.deps.sleep = async (ms) => {
+    slept.push(ms);
+  };
+  h.deps.random = () => 0.5;
+  h.deps.isRateLimited = (err) => err instanceof Error && err.message === "429";
+  h.deps.tick = async () => {
+    throw new Error("429");
+  };
+  const s = await runSignalBot(h.deps, {
+    symbols: ["A", "B"],
+    intervalMs: 1000,
+    maxPasses: 2,
+    rateLimitPauseMs: 900_000,
+    pacingMs: [400, 2400],
+    intervalJitter: 0.25,
+  });
+  assert.equal(s.rateLimited, 2);
+  assert.equal(h.sent.length, 1, "one notice, not one per pause");
+  assert.match(h.sent[0], /memperlambat/);
+  assert.equal(slept.filter((ms) => ms === 900_000).length, 2);
+  assert.ok(slept.includes(1400), "the pause between two morning reads is drawn from pacingMs");
+  assert.ok(!h.sent.some((t) => t.includes("gagal membaca harga")), "a slow-down is not reported as an outage");
+});
+
 /* ---------------------------------- replay ----------------------------------- */
 
 import { replayDay } from "../src/signals/replay.ts";

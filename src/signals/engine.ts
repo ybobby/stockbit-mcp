@@ -138,6 +138,20 @@ function pillarLines(ctx: DailyContext): string[] {
     .map((p) => `${PILLAR_ID[p.name] ?? p.name}: ${(p.score as number) > 0 ? "positif" : "negatif"} (${Math.round(p.score as number)})`);
 }
 
+/**
+ * The half of the BUY rule that only the morning analysis decides: null when `ctx` may produce a BUY
+ * today, else the reason it cannot. The loop uses it to watch only the symbols that can still buy.
+ */
+export function dailyGate(ctx: DailyContext, cfg: SignalConfig = DEFAULT_CONFIG): string | null {
+  if (ctx.lean !== "bullish") return `daily-lean-${ctx.lean}`;
+  if (ctx.score < cfg.minScore) return "daily-score-low";
+  if (ctx.confidence < cfg.minConfidence) return "daily-confidence-low";
+  const broker = ctx.pillars.find((p) => p.name === "brokerFlow");
+  if (broker && broker.score !== null && broker.score < 0) return "broker-flow-negative";
+  if (ctx.atr === null || ctx.prevHigh === null || ctx.prevLow === null) return "no-daily-bars";
+  return null;
+}
+
 /** Should this tick open a BUY? Returns the plan, or the reason it did not. */
 export function evaluateEntry(
   ctx: DailyContext,
@@ -146,13 +160,9 @@ export function evaluateEntry(
   cfg: SignalConfig = DEFAULT_CONFIG,
 ): EntryDecision {
   if (!(tick.price > 0)) return { ok: false, reason: "no-price" };
-  if (ctx.lean !== "bullish") return { ok: false, reason: `daily-lean-${ctx.lean}` };
-  if (ctx.score < cfg.minScore) return { ok: false, reason: "daily-score-low" };
-  if (ctx.confidence < cfg.minConfidence) return { ok: false, reason: "daily-confidence-low" };
-
-  const broker = ctx.pillars.find((p) => p.name === "brokerFlow");
-  if (broker && broker.score !== null && broker.score < 0) return { ok: false, reason: "broker-flow-negative" };
-
+  const gate = dailyGate(ctx, cfg);
+  if (gate) return { ok: false, reason: gate };
+  // dailyGate has checked these; repeated so the compiler can see it.
   if (ctx.atr === null || ctx.prevHigh === null || ctx.prevLow === null) return { ok: false, reason: "no-daily-bars" };
 
   const change = changePctOf(tick, ctx.prevClose);

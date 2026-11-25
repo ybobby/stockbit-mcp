@@ -16,11 +16,12 @@ export const DEFAULT_UNIVERSE = [
 export const SIGNALS_COMMANDS: CommandTable = {
   run: {
     summary: "watch prices all session and send BUY/SELL signals to Telegram (no orders, ever)",
-    usage: "[BBCA,ANTM|watchlist[:Name]] [1m|2m|5m]",
+    usage: "[BBCA,ANTM|watchlist[:Name]] [1m|3m|5m]",
     flags: {
       "--dry-run": "decide and print, but send nothing to Telegram",
       "--no-ai": "skip the Claude review even when ANTHROPIC_API_KEY is set",
       "--always": "run even outside IDX hours (testing only: a shut market reads as flat)",
+      "--watch-all": "poll every symbol all session, not only the morning's BUY candidates (many more requests)",
     },
     valueFlags: {
       "--max-buys": { placeholder: "N", help: "BUY messages per day (default 3)" },
@@ -34,6 +35,8 @@ export const SIGNALS_COMMANDS: CommandTable = {
     details: [
       "With no scope, a built-in list of 25 liquid IDX stocks is watched. `all` is not accepted:",
       "each symbol is analysed every morning, and the whole market is too many requests.",
+      "After the morning, only the symbols that passed the daily gate and the open signals are polled",
+      "(default every 3m, with random spacing). A 429 from Stockbit pauses polling for 15 minutes.",
       "Telegram: STOCKBIT_TELEGRAM_BOT_TOKEN and STOCKBIT_TELEGRAM_CHAT_ID (the whale watch's group).",
       "AI note and veto: --ai api (ANTHROPIC_API_KEY, billed per use; model from STOCKBIT_SIGNALS_MODEL,",
       "default claude-opus-5-5) or --ai claude-code (runs `claude -p` on this machine, on your Claude plan).",
