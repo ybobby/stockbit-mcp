@@ -153,7 +153,7 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
     if (rateNoticeDay !== today) {
       rateNoticeDay = today;
       await send(
-        `⏸️ Stockbit meminta bot memperlambat. Bot sinyal berhenti membaca harga ${Math.round(rateLimitPauseMs / 60_000)} menit, lalu lanjut sendiri.`,
+        `⏸️ Sumber data meminta bot memperlambat. Bot sinyal berhenti membaca harga ${Math.round(rateLimitPauseMs / 60_000)} menit, lalu lanjut sendiri.`,
         { type: "rate-limit-notice", at: now.toISOString() },
       );
     }
@@ -176,7 +176,7 @@ export async function runSignalBot(deps: SignalBotDeps, opts: SignalBotOptions):
 
   const authStop = async (now: Date) => {
     await send(
-      "⛔ Bot sinyal berhenti: sesi login Stockbit sudah tidak berlaku.\nLogin ulang (stockbit-auth login), lalu jalankan bot sinyal lagi.",
+      "⛔ Bot sinyal berhenti: sesi login ke sumber data sudah tidak berlaku.\nAdmin perlu login ulang, lalu jalankan bot sinyal lagi.",
       { type: "stopped-auth", at: now.toISOString() },
     );
     summary.ended = "auth";

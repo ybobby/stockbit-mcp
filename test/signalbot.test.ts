@@ -237,6 +237,7 @@ test("an expired session sends one message and stops", async () => {
   assert.equal(s.ended, "auth");
   assert.equal(h.sent.length, 1);
   assert.match(h.sent[0], /login/);
+  assert.doesNotMatch(h.sent[0], /stockbit/i, "Telegram text stays provider-neutral");
 });
 
 test("after the morning, only the BUY candidates and open signals are polled", async () => {
@@ -277,6 +278,7 @@ test("a rate-limit answer pauses polling and says so once a day; reads are rando
   assert.equal(s.rateLimited, 2);
   assert.equal(h.sent.length, 1, "one notice, not one per pause");
   assert.match(h.sent[0], /memperlambat/);
+  assert.doesNotMatch(h.sent[0], /stockbit/i, "Telegram text stays provider-neutral");
   assert.equal(slept.filter((ms) => ms === 900_000).length, 2);
   assert.ok(slept.includes(1400), "the pause between two morning reads is drawn from pacingMs");
   assert.ok(!h.sent.some((t) => t.includes("gagal membaca harga")), "a slow-down is not reported as an outage");
