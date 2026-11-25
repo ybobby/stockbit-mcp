@@ -48,6 +48,15 @@ export interface Signal {
   /** Dedup key component: the price rounded into a 1%-wide bucket. */
   priceBucket: number;
   at: number;
+  /**
+   * The same finding in plain Indonesian, for a chat message a non-specialist reads on a phone.
+   *
+   * Written from the same numbers as `headline`/`detail`, in the same function, so the two cannot
+   * disagree. It must make no stronger claim than the English: no buyer names, no "manipulation",
+   * no direction the measurement cannot see. Optional so a caller that only reads the English is
+   * unaffected.
+   */
+  id?: { headline: string; detail: string[] };
 }
 
 export interface Thresholds {
@@ -109,6 +118,23 @@ const rupiah = (n: number): string => {
   if (abs >= 1e6) return `Rp ${(n / 1e6).toFixed(1)} jt`;
   return `Rp ${Math.round(n).toLocaleString("en-US")}`;
 };
+
+/** Indonesian money: "Rp 2,10 M", "Rp 525 jt". Miliar is M, the convention on Indonesian trading screens. */
+export const rupiahId = (n: number): string => {
+  const abs = Math.abs(n);
+  const f = (v: number, d: number) => v.toLocaleString("id-ID", { minimumFractionDigits: d, maximumFractionDigits: d });
+  if (abs >= 1e12) return `Rp ${f(n / 1e12, 2)} T`;
+  if (abs >= 1e9) return `Rp ${f(n / 1e9, 2)} M`;
+  if (abs >= 1e6) return `Rp ${f(n / 1e6, 0)} jt`;
+  return `Rp ${f(n, 0)}`;
+};
+
+/** Indonesian number with thousands dots: 28.804. */
+export const numId = (n: number, digits = 0): string =>
+  n.toLocaleString("id-ID", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+const lotsId = (shares: number): string => numId(Math.round(toLots(shares)));
+const sideId = (side: "bid" | "offer"): string => (side === "bid" ? "beli (bid)" : "jual (offer)");
 
 const severityFor = (surprise: number): Severity =>
   surprise >= 10 ? "critical" : surprise >= 3 ? "alert" : surprise >= 1 ? "watch" : "info";
@@ -181,6 +207,20 @@ export function valueSurge(input: SurgeInput, t: Thresholds = DEFAULTS): Signal 
     ],
     priceBucket: 0,
     at: Date.now(),
+    id: {
+      headline: `${delta.symbol}: transaksi besar masuk`,
+      detail: [
+        `${rupiahId(delta.value)} berpindah tangan dalam ${Math.round(delta.seconds)} detik lewat ${numId(delta.trades)} transaksi.`,
+        `Rata-rata per transaksi ${rupiahId(windowMeanPrint)}, ${numId(concentration, 1)}x lebih besar dari rata-rata saham ini hari ini (${rupiahId(sessionMeanPrint)}).`,
+        `Uang mengalir ${numId(rate, 1)}x lebih cepat dari biasanya hari ini.`,
+        delta.confidence === "single"
+          ? "Hanya 1 transaksi, jadi ini memang satu order besar."
+          : delta.confidence === "few"
+            ? `Hanya ${delta.trades} transaksi, jadi setidaknya ada satu order besar di dalamnya.`
+            : `Ada ${numId(delta.trades)} transaksi, jadi ini besar secara rata-rata. Belum tentu ada satu order raksasa.`,
+        "Arahnya (beli atau jual) tidak terlihat dari data ini.",
+      ],
+    },
   };
 }
 
@@ -249,6 +289,17 @@ export function bandApproach(input: BandInput, t: Thresholds = DEFAULTS): Signal
     ],
     priceBucket: bucket(book.lastPrice),
     at: Date.now(),
+    id: {
+      headline: `${book.symbol}: mendekati ${side.toUpperCase()} ${numId(edge)}`,
+      detail: [
+        `Harga ${numId(book.lastPrice)}, tinggal ${numId(Math.abs(pct), 1)}% lagi ke batas ${side.toUpperCase()}.`,
+        `Antrean ${side === "ara" ? "jual" : "beli"} yang tersisa sebelum ${side.toUpperCase()}: ${lotsId(remaining.shares)} lot.`,
+        `Dengan kecepatan transaksi ${Math.round(windowSeconds)} detik terakhir, antrean itu habis dalam sekitar ${numId(minutes, 1)} menit.`,
+        ...(remaining.complete
+          ? []
+          : ["Order book tidak menampilkan semua level sampai batas, jadi antrean sebenarnya bisa lebih banyak."]),
+      ],
+    },
   };
 }
 
@@ -306,6 +357,18 @@ export function bookImbalance(input: ImbalanceInput, t: Thresholds = DEFAULTS): 
     ],
     priceBucket: bucket(book.lastPrice),
     at: Date.now(),
+    id: {
+      headline: bidHeavy
+        ? `${book.symbol}: antrean beli jauh lebih tebal dari antrean jual`
+        : `${book.symbol}: antrean jual jauh lebih tebal dari antrean beli`,
+      detail: [
+        bidHeavy
+          ? `Di 5 level teratas order book, ${numId(pct)}% antrean adalah beli (bid). Pengecekan sebelumnya ${numId(previousPercent)}%.`
+          : `Di 5 level teratas order book, antrean beli (bid) hanya ${numId(pct)}%, sisanya antrean jual. Pengecekan sebelumnya ${numId(previousPercent)}%.`,
+        "Kondisi ini bertahan di dua pengecekan berturut-turut.",
+        "Antrean belum tentu jadi transaksi dan bisa ditarik kapan saja.",
+      ],
+    },
   };
 }
 
@@ -373,6 +436,14 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
               "Depth withdrawn. That is an observation about the book, not a claim about anyone's intent.",
             ],
             priceBucket: bucket(c.price),
+            id: {
+              headline: `${book.symbol}: antrean besar ${sideId(c.side)} ditarik di harga ${numId(c.price)}`,
+              detail: [
+                `Antrean di harga itu turun dari ${lotsId(c.before)} lot menjadi ${lotsId(c.after)} lot.`,
+                `Padahal yang tertransaksi di seluruh pasar dalam waktu itu cuma ${lotsId(tradedShares)} lot, jadi sebagian besar ditarik, bukan dimakan.`,
+                "Ini pengamatan atas order book, bukan tuduhan soal niat siapa pun.",
+              ],
+            },
           },
         };
       }
@@ -395,6 +466,14 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
               `Only ${toLots(tradedShares).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots traded in that time, so this is new resting size rather than a shuffle.`,
             ],
             priceBucket: bucket(c.price),
+            id: {
+              headline: `${book.symbol}: tembok antrean ${sideId(c.side)} muncul di harga ${numId(c.price)}`,
+              detail: [
+                `Antrean di harga itu naik dari ${lotsId(c.before)} lot menjadi ${lotsId(c.after)} lot.`,
+                `Yang tertransaksi dalam waktu itu cuma ${lotsId(tradedShares)} lot, jadi ini antrean baru, bukan sekadar geser.`,
+                "Antrean bisa ditarik kapan saja.",
+              ],
+            },
           },
         };
       }
@@ -437,6 +516,12 @@ export function awakening(input: AwakeningInput, t: Thresholds = DEFAULTS): Sign
     ],
     priceBucket: 0,
     at: Date.now(),
+    id: {
+      headline: `${symbol}: saham yang biasanya sepi mendadak ramai`,
+      detail: [
+        `Nilai transaksi hari ini ${rupiahId(todayValue)}, sudah ${numId(multiple, 1)}x seluruh sesi sebelumnya (${rupiahId(previousSessionValue)}).`,
+      ],
+    },
   };
 }
 
@@ -468,6 +553,15 @@ export function umaFlag(book: OrderBook): Signal | null {
     ].filter(Boolean),
     priceBucket: bucket(book.lastPrice),
     at: Date.now(),
+    id: {
+      headline: book.uma
+        ? `${book.symbol}: IDX mengumumkan UMA (aktivitas pasar tidak biasa)`
+        : `${book.symbol}: punya notasi khusus IDX ${book.notation.join(", ")}`,
+      detail: [
+        book.uma ? "UMA adalah peringatan dini dari bursa, bukan sanksi dan bukan bukti manipulasi." : "",
+        book.notation.length ? `Kode notasi: ${book.notation.join(", ")}.` : "",
+      ].filter(Boolean),
+    },
   };
 }
 
@@ -508,5 +602,14 @@ export function floorLocked(book: OrderBook): Signal | null {
     ],
     priceBucket: bucket(book.lastPrice),
     at: Date.now(),
+    id: {
+      headline: `${book.symbol}: terkunci di ARB ${numId(book.arb)}`,
+      detail: [
+        `Antrean jual di ARB: ${lotsId(offerAtFloor)} lot.`,
+        bidShares === 0
+          ? "Tidak ada antrean beli sama sekali. Posisi yang dibuka di sini tidak bisa dijual hari ini."
+          : `Antrean beli di 5 level teratas cuma ${lotsId(bidShares)} lot, antrean jualnya ${numId(ratio)}x lebih besar.`,
+      ],
+    },
   };
 }

@@ -44,6 +44,10 @@ const surge: Signal = {
   detail: ["Average print Rp 525.0 jt vs Rp 40.0 jt for the session — 13.1x."],
   priceBucket: 100,
   at: OPEN.getTime(),
+  id: {
+    headline: "TEST: transaksi besar masuk",
+    detail: ["Rp 2,10 M berpindah tangan dalam 60 detik lewat 4 transaksi."],
+  },
 };
 
 function pass(over: Partial<PassResult> = {}): PassResult {
@@ -115,10 +119,11 @@ test("an emitted signal reaches Telegram once, with its headline and the WIB tim
 
   assert.equal(summary.alertsSent, 1);
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0], /^🐋 TEST · value-surge · ALERT/);
-  assert.match(h.sent[0], /Rp 2\.10 bn in 60s/);
-  assert.match(h.sent[0], /10:01:00 WIB/);
-  assert.match(h.sent[0], /not a trade signal/);
+  assert.match(h.sent[0], /^🐋 TEST: transaksi besar masuk/);
+  assert.match(h.sent[0], /Rp 2,10 M berpindah tangan/);
+  assert.match(h.sent[0], /Tingkat: Penting · 10:01:00 WIB/);
+  assert.match(h.sent[0], /Bukan rekomendasi beli atau jual/);
+  assert.doesNotMatch(h.sent[0], /bn in 60s/, "the Indonesian text replaces the English, it is not appended");
   const alert = h.events.find((e) => e.type === "alert");
   assert.equal(alert?.delivered, "sent");
 });
@@ -137,7 +142,7 @@ test("a market-wide trip is one message, not one per symbol", async () => {
   const h = harness([pass({ engine: { emitted: [], suppressed: [], marketWide: mw } })]);
   await runWhaleWatch(h.deps, { intervalMs: 60_000 });
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0], /Market-wide value-surge/);
+  assert.match(h.sent[0], /serentak di 60 dari 100 saham/);
 });
 
 test("an expired session sends one message and ends the loop as auth", async () => {
@@ -145,7 +150,7 @@ test("an expired session sends one message and ends the loop as auth", async () 
   const summary = await runWhaleWatch(h.deps, { intervalMs: 60_000 });
   assert.equal(summary.ended, "auth");
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0], /session is no longer valid/);
+  assert.match(h.sent[0], /sesi login Stockbit sudah tidak berlaku/);
   assert.match(h.sent[0], /stockbit-auth login/);
 });
 
@@ -154,9 +159,9 @@ test("repeated failures announce an outage once, then announce recovery", async 
   const h = harness([boom(), boom(), boom(), boom(), boom(), pass()]);
   await runWhaleWatch(h.deps, { intervalMs: 60_000, failureNotice: 3 });
   assert.equal(h.sent.length, 2, h.sent.join("\n---\n"));
-  assert.match(h.sent[0], /cannot read the market \(3 failed passes/);
-  assert.match(h.sent[0], /does NOT mean a quiet market/);
-  assert.match(h.sent[1], /reading the market again/);
+  assert.match(h.sent[0], /gagal membaca data pasar 3 kali berturut-turut/);
+  assert.match(h.sent[0], /BUKAN berarti pasar sepi/);
+  assert.match(h.sent[1], /bisa membaca data pasar lagi/);
   assert.equal(h.events.filter((e) => e.type === "pass-failed").length, 5);
 });
 
@@ -199,7 +204,7 @@ test("broker context is fetched once per symbol per day and a failure costs only
   await runWhaleWatch(h.deps, { intervalMs: 60_000 });
   assert.equal(calls, 1);
   assert.equal(h.sent.length, 2, "both alerts still went out");
-  assert.doesNotMatch(h.sent[0], /Broker context/);
+  assert.doesNotMatch(h.sent[0], /Data broker/);
   assert.ok(h.events.some((x) => x.type === "context-failed"));
 });
 
@@ -210,9 +215,13 @@ const ctx = (over: Partial<BandarContext> = {}): BandarContext => ({
   from: "2026-11-24",
   to: "2026-11-24",
   endOfDay: true,
-  buyers: [],
-  sellers: [],
-  labels: [],
+  buyers: [
+    { code: "AA", investor: "foreign", netLots: 1000, netValueIdr: 1e9, avgPrice: 1000, freq: 4, lotsPerTrade: 250, profile: "institution-like" },
+  ],
+  sellers: [
+    { code: "BB", investor: "local", netLots: -900, netValueIdr: -9e8, avgPrice: 1000, freq: 300, lotsPerTrade: 3, profile: "retail-like" },
+  ],
+  labels: [{ scope: "top3", label: "Acc", amountIdr: 1e9, percent: 12 }],
   degraded: false,
   degradedReason: null,
   lines: [
@@ -227,17 +236,23 @@ const ctx = (over: Partial<BandarContext> = {}): BandarContext => ({
 test("the broker block names its date and says it is not live", () => {
   const lines = brokerContextLines(ctx());
   assert.ok(lines);
-  assert.match(lines[0], /2026-11-24 \(end-of-day, NOT live\)/);
-  assert.equal(lines.length, 3, "only the buyer and seller lines, not the methodology footnotes");
+  assert.match(lines[0], /^Data broker 24 Nov 2026 \(data akhir hari, BUKAN live\):$/);
+  assert.match(lines[1], /Pembeli terbesar: AA \(asing\), 1\.000 lot, Rp 1,00 M, pola institusi/);
+  assert.match(lines[2], /Penjual terbesar: BB \(lokal\), 900 lot, Rp 900 jt, pola ritel/, "sell magnitudes, not the wire's negative sign");
+  assert.match(lines[3], /top 3\): Acc/);
   const text = whaleText(surge, OPEN, lines);
-  assert.match(text, /Biggest buyer AA/);
-  assert.ok(text.indexOf("NOT live") > text.indexOf(surge.headline), "context comes after the live measurement");
+  assert.ok(text.indexOf("BUKAN live") > text.indexOf(surge.id!.headline), "context comes after the live measurement");
+});
+
+test("a signal without Indonesian text still sends, in English", () => {
+  const { id: _drop, ...english } = surge;
+  assert.match(whaleText(english, OPEN, null), /Rp 2\.10 bn in 60s/);
 });
 
 test("a degraded or empty summary adds no block at all", () => {
   assert.equal(brokerContextLines(null), null);
   assert.equal(brokerContextLines(ctx({ degraded: true, degradedReason: "No broker rows came back." })), null);
-  assert.equal(brokerContextLines(ctx({ lines: ["End-of-day data."] })), null);
+  assert.equal(brokerContextLines(ctx({ buyers: [], sellers: [], labels: [] })), null);
 });
 
 test("the clock helpers speak WIB", () => {

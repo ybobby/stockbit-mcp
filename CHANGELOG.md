@@ -20,6 +20,11 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
   expired session sends one message and exits 3 so a supervisor does not restart into it, and three
   failed passes in a row say the quiet is not a quiet market. Events go to stdout as NDJSON and to
   `whale-alerts.log` before Telegram is tried. Guide: [`docs/WHALE-WATCH.md`](docs/WHALE-WATCH.md).
+- Every live detector now also describes its finding in plain Indonesian (`Signal.id`), written in
+  the same function from the same numbers as the English so the two cannot disagree, and the whale
+  watch sends that text to Telegram. The broker block, severity and failure messages are Indonesian
+  too. The wording keeps the English's limits: no buyer names, no direction a value surge cannot see,
+  and "manipulasi" only in the UMA disclaimer's negation.
 
 ### Fixed
 

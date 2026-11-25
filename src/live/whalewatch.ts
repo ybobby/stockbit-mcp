@@ -37,7 +37,7 @@ import { wibTodayIso } from "../core/sessionclock.js";
 import type { BandarContext } from "./bandar.js";
 import type { PassResult } from "./watcher.js";
 import type { EngineResult } from "./alertengine.js";
-import type { Signal, SignalKind } from "./signals.js";
+import { numId, rupiahId, type Severity, type Signal, type SignalKind } from "./signals.js";
 
 /* ------------------------------------ the clock ------------------------------------ */
 
@@ -75,39 +75,73 @@ const MARK: Record<SignalKind, string> = {
   "floor-locked": "⛔",
 };
 
-/**
- * The lines of a broker summary worth a line on a phone screen.
- *
- * Taken from `readBandar`'s own sentences rather than rewritten, so the retail/institution boundary
- * and its caveats stay defined in exactly one place. A degraded read (no rows, or a floor-locked
- * book) yields null: "no broker data" is not context, and printing it under every alert would teach
- * the reader to skip the block.
- */
-export function brokerContextLines(ctx: BandarContext | null): string[] | null {
-  if (!ctx || ctx.degraded) return null;
-  const keep = ctx.lines.filter((l) => /^(Biggest buyer|Biggest seller|Institution-shaped|Stockbit's own)/.test(l));
-  if (!keep.length) return null;
-  const when = ctx.from && ctx.to ? (ctx.from === ctx.to ? ctx.from : `${ctx.from} to ${ctx.to}`) : "previous session";
-  return [`Broker context, ${when} (end-of-day, NOT live):`, ...keep.map((l) => `• ${l}`)];
+const SEVERITY_ID: Record<Severity, string> = {
+  info: "Info",
+  watch: "Pantau",
+  alert: "Penting",
+  critical: "Sangat penting",
+};
+
+const INVESTOR_ID: Record<string, string> = {
+  foreign: "asing",
+  local: "lokal",
+  government: "pemerintah",
+  unknown: "tidak diketahui",
+};
+
+const PROFILE_ID: Record<string, string> = {
+  "retail-like": "pola ritel, banyak transaksi kecil",
+  "institution-like": "pola institusi, sedikit transaksi besar",
+  mixed: "pola campuran",
+  unknown: "pola tidak terbaca",
+};
+
+/** "2026-11-24" → "24 Nov 2026". */
+function tanggal(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  const bulan = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"][Number(m[2]) - 1];
+  return `${Number(m[3])} ${bulan ?? m[2]} ${m[1]}`;
 }
 
 /**
- * One alert as a Telegram message. Plain text — `postTelegram` sends no `parse_mode`, so nothing in
- * a headline can make Telegram reject the message.
+ * The previous session's broker summary, in a few plain Indonesian lines.
+ *
+ * Built from `readBandar`'s structured rows, with the retail/institution boundary taken from its
+ * `profile` field so that boundary stays defined in exactly one place. A degraded read (no rows, or
+ * a floor-locked book) yields null: "no broker data" is not context, and printing it under every
+ * alert would teach the reader to skip the block.
+ */
+export function brokerContextLines(ctx: BandarContext | null): string[] | null {
+  if (!ctx || ctx.degraded) return null;
+  const lines: string[] = [];
+  const row = (label: string, b: BandarContext["buyers"][number]) =>
+    `• ${label} terbesar: ${b.code} (${INVESTOR_ID[b.investor] ?? b.investor}), ${numId(Math.abs(b.netLots))} lot, ${rupiahId(Math.abs(b.netValueIdr))}, ${PROFILE_ID[b.profile] ?? b.profile}.`;
+  if (ctx.buyers[0]) lines.push(row("Pembeli", ctx.buyers[0]));
+  if (ctx.sellers[0]) lines.push(row("Penjual", ctx.sellers[0]));
+  const t3 = ctx.labels.find((l) => l.scope === "top3");
+  if (t3?.label) lines.push(`• Bandar detector Stockbit (top 3): ${t3.label}.`);
+  if (!lines.length) return null;
+  const when =
+    ctx.from && ctx.to ? (ctx.from === ctx.to ? tanggal(ctx.from) : `${tanggal(ctx.from)} sampai ${tanggal(ctx.to)}`) : "sesi sebelumnya";
+  return [`Data broker ${when} (data akhir hari, BUKAN live):`, ...lines];
+}
+
+/**
+ * One alert as a Telegram message, in plain Indonesian. Plain text — `postTelegram` sends no
+ * `parse_mode`, so nothing in a headline can make Telegram reject the message. Falls back to the
+ * English text for a signal that carries no Indonesian.
  */
 export function whaleText(signal: Signal, now: Date, context: string[] | null): string {
-  const lines = [
-    `${MARK[signal.kind] ?? "•"} ${signal.symbol} · ${signal.kind} · ${signal.severity.toUpperCase()}`,
-    signal.headline,
-    ...signal.detail.map((d) => `• ${d}`),
-  ];
+  const words = signal.id ?? { headline: signal.headline, detail: signal.detail };
+  const lines = [`${MARK[signal.kind] ?? "•"} ${words.headline}`, ...words.detail.map((d) => `• ${d}`)];
   if (context?.length) lines.push("", ...context);
-  lines.push("", `${wibClock(now)} WIB · stockbit-live watch · not a trade signal`);
+  lines.push("", `Tingkat: ${SEVERITY_ID[signal.severity]} · ${wibClock(now)} WIB`, "Bukan rekomendasi beli atau jual.");
   return lines.join("\n");
 }
 
 export function marketWideText(mw: NonNullable<EngineResult["marketWide"]>, now: Date): string {
-  return `📈 Market-wide ${mw.kind}\n${mw.note}\n\n${wibClock(now)} WIB · stockbit-live watch`;
+  return `📈 Sinyal yang sama muncul serentak di ${mw.count} dari ${mw.universe} saham.\nIni pergerakan pasar secara umum, bukan satu saham tertentu, jadi tidak dikirim per saham.\n\n${wibClock(now)} WIB`;
 }
 
 /* ------------------------------------ the log ------------------------------------ */
@@ -235,7 +269,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       if (deps.isAuthError(err)) {
         // Polling cannot fix this, and a loop that kept trying would sit silently forever.
         await send(
-          `⛔ stockbit-live watch stopped: the Stockbit session is no longer valid.\nLog in again (stockbit-auth login), then restart the watcher.\n${wibClock(now)} WIB`,
+          `⛔ Whale watch berhenti: sesi login Stockbit sudah tidak berlaku.\nLogin ulang (stockbit-auth login), lalu jalankan whale watch lagi.\n${wibClock(now)} WIB`,
           { type: "stopped-auth", at: now.toISOString() },
         );
         summary.ended = "auth";
@@ -246,7 +280,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       if (failures === failureNotice && !announcedOutage) {
         announcedOutage = true;
         await send(
-          `⚠️ stockbit-live watch cannot read the market (${failures} failed passes in a row). Quiet from here does NOT mean a quiet market.\n${wibClock(now)} WIB`,
+          `⚠️ Whale watch gagal membaca data pasar ${failures} kali berturut-turut. Kalau setelah ini sepi, itu BUKAN berarti pasar sepi.\n${wibClock(now)} WIB`,
           { type: "outage", at: now.toISOString(), consecutive: failures },
         );
       }
@@ -255,7 +289,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
     }
 
     if (announcedOutage) {
-      await send(`✅ stockbit-live watch is reading the market again.\n${wibClock(now)} WIB`, {
+      await send(`✅ Whale watch sudah bisa membaca data pasar lagi.\n${wibClock(now)} WIB`, {
         type: "recovered",
         at: now.toISOString(),
       });
