@@ -40,18 +40,27 @@ Lalu ada penyaring:
 
 ## Peran AI (opsional)
 
-Kalau `ANTHROPIC_API_KEY` di-set, setiap calon sinyal BELI dikirim ke Claude bersama datanya. Claude:
+Ada dua cara memakai AI, dipilih dengan `--ai`:
+
+- `--ai claude-code`: memakai **Claude Code di Mac ini** (`claude -p`), jadi memakai langganan Claude
+  (Pro/Max) yang sudah login. **Tidak ada biaya tambahan**, hanya memakai kuota langganan. Syaratnya
+  Claude Code terpasang dan sudah login. Kalau kuota habis atau Claude Code gagal, sinyal tetap
+  terkirim tanpa catatan AI.
+- `--ai api`: memakai API key Anthropic (`ANTHROPIC_API_KEY`), ditagih terpisah per pemakaian.
+  Ini bawaan kalau key di-set.
+
+Tanpa keduanya (`--ai off`), bot berjalan dengan aturan saja.
+
+Setiap calon sinyal BELI dikirim ke Claude bersama datanya. Claude:
 
 - boleh **membatalkan** sinyal yang buktinya lemah atau bertentangan;
 - menulis **catatan singkat** dalam bahasa Indonesia yang ikut di pesan;
 - **tidak boleh** membuat sinyal sendiri atau mengubah harga, stop loss, dan target.
 
 Catatan AI yang menyebut angka yang tidak ada di data otomatis dibuang. Kalau AI gagal dihubungi,
-sinyal tetap jalan tanpa catatan. Model bawaan `claude-opus-5-5`; ganti dengan
+sinyal tetap jalan tanpa catatan. Untuk `--ai api`, model bawaan `claude-opus-5-5`; ganti dengan
 `STOCKBIT_SIGNALS_MODEL` (misalnya `claude-haiku-5-5` yang jauh lebih murah). Dengan batas 3 sinyal
 per hari, jumlah panggilan kecil.
-
-Tanpa API key, bot tetap berjalan dengan aturan saja.
 
 ## Menjalankan di Mac
 
@@ -89,11 +98,26 @@ besar"; tanpa whale watch, bot sinyal tetap jalan dengan pemicu breakout saja.
 | `run watchlist 2m` | Watchlist default Stockbit Anda. |
 | `run BBCA,BMRI,ANTM 1m` | Saham tertentu, tiap 1 menit. |
 | `--max-buys 2 --max-open 4` | Ubah batas harian dan batas sinyal terbuka. |
-| `--no-ai` | Matikan review AI walau API key ada. |
+| `--ai claude-code` | Review AI memakai langganan Claude (tanpa biaya tambahan). |
+| `--no-ai` / `--ai off` | Matikan review AI walau API key ada. |
 | `--dry-run` | Cetak saja, tidak mengirim dan tidak menulis jurnal. |
 
 `all` tidak diterima, karena setiap saham dianalisis tiap pagi dan seluruh pasar terlalu banyak
 request.
+
+### Simulasi satu hari (replay)
+
+Putar ulang data hari ini (atau hari lain minggu ini) melalui bot yang sama, untuk melihat kapan
+sinyal BELI dan JUAL akan keluar dan berapa hasilnya:
+
+```bash
+node dist/bin/stockbit-signals.js replay --pretty              # hari ini, 25 saham bawaan
+node dist/bin/stockbit-signals.js replay BBCA,ANTM 2026-11-24  # saham dan tanggal tertentu
+node dist/bin/stockbit-signals.js replay --send                # kirim satu ringkasan SIMULASI ke grup
+```
+
+Analisis pagi pada simulasi hanya memakai data sampai kemarin, supaya tidak "menyontek" data sore.
+Harga diambil dari titik grafik intraday. Satu hari simulasi tidak membuktikan strategi bekerja.
 
 ### Perintah lain
 

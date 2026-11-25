@@ -238,3 +238,66 @@ test("an expired session sends one message and stops", async () => {
   assert.equal(h.sent.length, 1);
   assert.match(h.sent[0], /login/);
 });
+
+/* ---------------------------------- replay ----------------------------------- */
+
+import { replayDay } from "../src/signals/replay.ts";
+import { claudeCodeReviewer, reviewFromText } from "../src/signals/ai.ts";
+import { replayText } from "../src/signals/messages.ts";
+import { chmodSync } from "node:fs";
+
+test("a replayed day produces timed BUY and SELL, and a SIMULASI summary", async () => {
+  const at = (hhmm: string) => new Date(`2026-11-25T${hhmm}:00+07:00`).toISOString();
+  const r = await replayDay({
+    day: "2026-11-25",
+    contexts: new Map([["TEST", ctx()], ["FLAT", { ...ctx(), symbol: "FLAT", lean: "neutral" as const }]]),
+    series: new Map([
+      ["TEST", [{ at: at("09:00"), price: 1005 }, { at: at("09:30"), price: 1020 }, { at: at("10:00"), price: 1070 }, { at: at("11:00"), price: 1015 }]],
+      ["FLAT", [{ at: at("09:00"), price: 500 }]],
+    ]),
+    whales: () => [],
+  });
+  assert.equal(r.trades.length, 1);
+  const t = r.trades[0];
+  assert.equal(t.buyAt, at("09:30"));
+  assert.equal(t.buy, 1020);
+  assert.equal(t.exitKind, "breakeven");
+  assert.equal(t.sellAt, at("11:00"));
+  // Sold at the price seen when the stop was found breached, not at the stop: -0.49%, not 0.
+  assert.equal(t.returnPct, -0.49);
+  assert.deepEqual(r.bullish, ["TEST"]);
+  const text = replayText(r.day, r.trades, r.analysed, r.bullish);
+  assert.match(text, /SIMULASI/);
+  assert.match(text, /BELI 09:30/);
+  assert.match(text, /JUAL 11:00/);
+  assert.ok(text.includes(DISCLAIMER_ID));
+});
+
+test("reviewFromText tolerates prose around the JSON and rejects anything else", () => {
+  assert.deepEqual(reviewFromText('ok: {"keputusan":"batal","catatan":"Lemah."}', {}), { approve: false, note: "Lemah." });
+  assert.equal(reviewFromText("tidak tahu", {}), null);
+  assert.equal(reviewFromText('{"keputusan":"mungkin"}', {}), null);
+});
+
+test("the Claude Code reviewer reads claude -p output and never passes the API key", async () => {
+  const fake = join(STORE, "fake-claude");
+  writeFileSync(
+    fake,
+    `#!/bin/sh\ncat >/dev/null\nif [ -n "$ANTHROPIC_API_KEY" ]; then echo leaked; exit 1; fi\necho '{"keputusan":"kirim","catatan":"Bukti searah."}'\n`,
+  );
+  chmodSync(fake, 0o755);
+  const prev = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = "sk-test";
+  try {
+    const d = evaluateEntry(ctx(), { price: 1020, changePct: 2 }, []);
+    assert.ok(d.ok);
+    if (!d.ok) return;
+    const review = await claudeCodeReviewer({ command: fake })({ plan: d.plan, ctx: ctx(), whales: [] });
+    assert.deepEqual(review, { approve: true, note: "Bukti searah." });
+    const missing = await claudeCodeReviewer({ command: join(STORE, "nope") })({ plan: d.plan, ctx: ctx(), whales: [] });
+    assert.equal(missing, null);
+  } finally {
+    if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prev;
+  }
+});

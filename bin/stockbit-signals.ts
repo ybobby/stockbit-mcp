@@ -17,6 +17,7 @@
  */
 import * as core from "../src/core/index.js";
 import { getSentimentStream } from "../src/core/stream.js";
+import { getSeriesBars } from "../src/core/market.js";
 import { isWithinPollingWindow, wibTodayIso } from "../src/core/sessionclock.js";
 import { CliParseError, formatUsage, gateCommandLine, isHelpToken, isVersionToken } from "../src/cliargs.js";
 import { VERSION } from "../src/version.js";
@@ -28,15 +29,17 @@ import { telegramTargetFromEnv, postTelegram } from "../src/alerts/notify.js";
 import { analyze, type AnalyzeDeps } from "../src/analysis/analyze.js";
 import { DEFAULT_UNIVERSE, SIGNALS_BIN, SIGNALS_COMMANDS, SIGNALS_EPILOGUE } from "../src/signals/cli.js";
 import { buildContext, tickFromQuote, whalesFromLog } from "../src/signals/context.js";
-import { claudeReviewer, DEFAULT_MODEL } from "../src/signals/ai.js";
+import { claudeCodeReviewer, claudeReviewer, DEFAULT_MODEL, type AiReviewer } from "../src/signals/ai.js";
+import { replayDay, type PricePoint } from "../src/signals/replay.js";
+import type { DailyContext } from "../src/signals/engine.js";
 import { journalPath, loadJournal, recap, saveJournal } from "../src/signals/ledger.js";
 import { mondayOf, runSignalBot } from "../src/signals/loop.js";
-import { recapText } from "../src/signals/messages.js";
+import { recapText, replayText } from "../src/signals/messages.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { stockbitDir } from "../src/paths.js";
 
-const VALUE_FLAGS = new Set(["--max-buys", "--max-open"]);
+const VALUE_FLAGS = new Set(["--max-buys", "--max-open", "--ai"]);
 
 function flag(name: string): boolean {
   return process.argv.includes(`--${name}`);
@@ -62,7 +65,7 @@ function positionals(): string[] {
 }
 
 function emit(body: unknown): void {
-  process.stdout.write(JSON.stringify(body) + "\n");
+  process.stdout.write(JSON.stringify(body, null, flag("pretty") ? 2 : 0) + "\n");
 }
 
 function fail(reason: string, detail: string, hint?: string): never {
@@ -80,8 +83,70 @@ function positiveInt(name: string, fallback: number): number {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function liveAnalyzeDeps(): AnalyzeDeps {
+  return {
+    bars: (symbol, count) => core.getBars({ symbol, bars: count }),
+    brokerSummary: (symbol, period) => core.getBrokerSummary({ symbol, period }),
+    priceBands: (symbol) => core.getPriceBands(symbol),
+    keystats: (symbol) => core.getKeystats(symbol),
+    ratios: (symbol) => core.getRatios(symbol),
+    sentiment: (symbol, limit) => getSentimentStream(symbol, limit),
+  };
+}
+
+/**
+ * The same readers, cut off before `day`: bars dated `day` or later are dropped, and the broker
+ * summary is asked for the fourteen calendar days that END yesterday. Without this a replay would
+ * decide its morning BUY list with the afternoon's data.
+ */
+function asOfDayDeps(day: string): AnalyzeDeps {
+  const live = liveAnalyzeDeps();
+  const shift = (n: number) => {
+    const d = new Date(`${day}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  return {
+    ...live,
+    bars: async (symbol, count) => {
+      const s = await core.getBars({ symbol, bars: count + 5 });
+      return { ...s, bars: s.bars.filter((b) => b.date < day).slice(-count) };
+    },
+    brokerSummary: (symbol) => core.getBrokerSummary({ symbol, from: shift(-14), to: shift(-1) }),
+  };
+}
+
+/** `2026-11-25 09:05:00` (Jakarta wall clock) → ISO. Null when there is no clock part. */
+function jakartaIso(wall: string): string | null {
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2})?/.exec(wall);
+  return m ? new Date(`${m[1]}T${m[2]}${m[3] ?? ":00"}+07:00`).toISOString() : null;
+}
+
 function signalLogPath(): string {
   return join(stockbitDir(), "signals", "signals.log");
+}
+
+async function symbolsFor(scopeToken: string | undefined): Promise<string[]> {
+  if (!scopeToken) return [...DEFAULT_UNIVERSE];
+  const scope = parseScope(scopeToken);
+  if (scope.kind === "all") {
+    fail("bad-arguments", "`all` is not accepted: every symbol is analysed each morning.", "Name the stocks (BBCA,ANTM), use `watchlist`, or omit the scope for the built-in list.");
+  }
+  return (await resolveScope(scope)).symbols ?? [];
+}
+
+/** `--ai api|claude-code|off`. Without the flag: api when a key is set (unless --no-ai), else off. */
+function reviewerFor(defaultMode: "auto" | "off"): { review: AiReviewer | undefined; label: string } {
+  const model = process.env.STOCKBIT_SIGNALS_MODEL?.trim() || undefined;
+  let mode = option("ai") ?? (flag("no-ai") || defaultMode === "off" ? "off" : process.env.ANTHROPIC_API_KEY?.trim() ? "api" : "off");
+  mode = mode.toLowerCase();
+  if (mode === "off") return { review: undefined, label: "off" };
+  if (mode === "api") {
+    if (!process.env.ANTHROPIC_API_KEY?.trim()) fail("bad-arguments", "--ai api needs ANTHROPIC_API_KEY.", "Use --ai claude-code to review on your Claude plan instead.");
+    return { review: claudeReviewer({ model }), label: `api (${model ?? DEFAULT_MODEL})` };
+  }
+  if (mode === "claude-code") return { review: claudeCodeReviewer({ model }), label: "claude-code (Claude plan)" };
+  fail("bad-arguments", `--ai must be api, claude-code or off, got ${JSON.stringify(mode)}.`);
 }
 
 async function run(): Promise<void> {
@@ -91,16 +156,7 @@ async function run(): Promise<void> {
   let intervalMs: number;
   try {
     intervalMs = intervalToken ? parseInterval(intervalToken).ms : 120_000;
-    if (!scopeToken) {
-      symbols = [...DEFAULT_UNIVERSE];
-    } else {
-      const scope = parseScope(scopeToken);
-      if (scope.kind === "all") {
-        fail("bad-arguments", "`all` is not accepted: every symbol is analysed each morning.", "Name the stocks (BBCA,ANTM), use `watchlist`, or omit the scope for the built-in list.");
-      }
-      const resolved = await resolveScope(scope);
-      symbols = resolved.symbols ?? [];
-    }
+    symbols = await symbolsFor(scopeToken);
   } catch (err) {
     if (err instanceof ScopeParseError || err instanceof IntervalParseError) {
       fail("bad-arguments", err.message, "Usage: stockbit-signals run [BBCA,ANTM|watchlist] [1m|2m|5m]");
@@ -121,8 +177,7 @@ async function run(): Promise<void> {
     );
   }
 
-  const aiOn = !flag("no-ai") && Boolean(process.env.ANTHROPIC_API_KEY?.trim());
-  const model = process.env.STOCKBIT_SIGNALS_MODEL?.trim() || DEFAULT_MODEL;
+  const ai = reviewerFor("auto");
 
   let stopping = false;
   process.on("SIGINT", () => (stopping = true));
@@ -132,18 +187,11 @@ async function run(): Promise<void> {
     while (!stopping && Date.now() < until) await sleep(Math.min(1000, until - Date.now()));
   };
 
-  const analyzeDeps: AnalyzeDeps = {
-    bars: (symbol, count) => core.getBars({ symbol, bars: count }),
-    brokerSummary: (symbol, period) => core.getBrokerSummary({ symbol, period }),
-    priceBands: (symbol) => core.getPriceBands(symbol),
-    keystats: (symbol) => core.getKeystats(symbol),
-    ratios: (symbol) => core.getRatios(symbol),
-    sentiment: (symbol, limit) => getSentimentStream(symbol, limit),
-  };
+  const analyzeDeps = liveAnalyzeDeps();
 
   process.stderr.write(
     `signal bot: ${symbols.length} symbols, every ${Math.round(intervalMs / 1000)}s` +
-      `${dryRun ? ", DRY RUN (nothing sent)" : ", to Telegram"}; AI review ${aiOn ? `on (${model})` : "off"}; ` +
+      `${dryRun ? ", DRY RUN (nothing sent)" : ", to Telegram"}; AI review ${ai.label}; ` +
       `journal ${journalPath()}. Ctrl-C to stop.\n`,
   );
 
@@ -183,7 +231,7 @@ async function run(): Promise<void> {
         return () => mem;
       })() : () => loadJournal(),
       saveJournal: dryRun ? () => {} : (j) => saveJournal(j),
-      review: aiOn ? claudeReviewer({ model }) : undefined,
+      review: ai.review,
       isAuthError: (err) => err instanceof StockbitError && err.kind === "auth",
     },
     {
@@ -196,6 +244,74 @@ async function run(): Promise<void> {
 
   emit({ ok: summary.ended !== "auth", type: "summary", ...summary });
   if (summary.ended === "auth") process.exit(3);
+}
+
+async function replay(): Promise<void> {
+  const [, scopeToken, dateToken] = positionals();
+  const day = dateToken ?? wibTodayIso();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) fail("bad-arguments", `Date must be YYYY-MM-DD, got ${JSON.stringify(day)}.`);
+  let symbols: string[];
+  try {
+    symbols = await symbolsFor(scopeToken);
+  } catch (err) {
+    if (err instanceof ScopeParseError) fail("bad-arguments", err.message);
+    if (err instanceof StockbitError && err.kind === "auth") fail("auth", err.message, "Run stockbit-auth login.");
+    throw err;
+  }
+  const ai = reviewerFor("off");
+  const telegram = flag("send") ? telegramTargetFromEnv() : null;
+  if (flag("send") && !telegram) fail("telegram-not-configured", "STOCKBIT_TELEGRAM_BOT_TOKEN and STOCKBIT_TELEGRAM_CHAT_ID must both be set.");
+
+  const deps = asOfDayDeps(day);
+  const contexts = new Map<string, DailyContext>();
+  const series = new Map<string, PricePoint[]>();
+  const skipped: Record<string, string> = {};
+  for (const symbol of symbols) {
+    process.stderr.write(`replay ${day}: ${symbol}\n`);
+    try {
+      const report = await analyze({ symbol, includeSentiment: false }, deps);
+      const bars = await deps.bars(symbol, 40);
+      contexts.set(symbol, buildContext(report, bars.bars, day));
+      const chart = await getSeriesBars(symbol, "1w");
+      const pts: PricePoint[] = [];
+      for (const b of chart.bars) {
+        if (!String(b.date).startsWith(day)) continue;
+        const at = jakartaIso(String(b.date));
+        if (at && b.close > 0) pts.push({ at, price: b.close });
+      }
+      if (pts.length) series.set(symbol, pts);
+      else skipped[symbol] = "no intraday points for that day";
+    } catch (err) {
+      if (err instanceof StockbitError && err.kind === "auth") fail("auth", err.message, "Run stockbit-auth login.");
+      skipped[symbol] = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  const result = await replayDay({
+    day,
+    contexts,
+    series,
+    whales: (symbol) => whalesFromLog(whaleLogPath(), symbol, day),
+    review: ai.review,
+    maxBuysPerDay: positiveInt("max-buys", 3),
+  });
+
+  let delivered: string | null = null;
+  const summaryText = replayText(day, result.trades, result.analysed, result.bullish);
+  if (telegram) delivered = (await postTelegram(telegram, summaryText)) ?? "sent";
+
+  // Series only for the symbols that traded, so the output stays small enough to chart.
+  const traded = new Set(result.trades.map((t) => t.symbol));
+  emit({
+    ok: true,
+    ...result,
+    ai: ai.label,
+    skipped,
+    contexts: [...contexts.values()].map((c) => ({ symbol: c.symbol, lean: c.lean, score: c.score, confidence: c.confidence, prevHigh: c.prevHigh })),
+    series: Object.fromEntries([...series].filter(([s]) => traded.has(s))),
+    summaryText,
+    telegram: telegram ? delivered : "not sent (pass --send)",
+  });
 }
 
 function status(): void {
@@ -240,9 +356,10 @@ async function main(): Promise<void> {
     throw err;
   }
   if (gate === "help") return;
-  if (gate === "unknown-command") fail("unknown-command", `"${command}" is not a command.`, "Commands: run · status · recap");
+  if (gate === "unknown-command") fail("unknown-command", `"${command}" is not a command.`, "Commands: run · replay · status · recap");
 
   if (command === "run") return run();
+  if (command === "replay") return replay();
   if (command === "status") return status();
   if (command === "recap") return recapCommand();
   fail("unknown-command", `"${command}" is not a command.`);

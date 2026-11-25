@@ -118,3 +118,45 @@ export function recapText(r: Recap, sinceDay: string, now: Date): string {
   );
   return lines.join("\n");
 }
+
+export interface ReplayTradeBrief {
+  symbol: string;
+  buyAt: string;
+  buy: number;
+  sellAt: string | null;
+  sell: number | null;
+  exitKind: string | null;
+  returnPct: number;
+  stillOpen: boolean;
+}
+
+const EXIT_SHORT: Record<string, string> = {
+  target2: "target 2",
+  stop: "stop loss",
+  breakeven: "balik ke harga beli",
+  flip: "analisis berbalik",
+  distribution: "tekanan jual",
+  time: "terlalu lama",
+};
+
+/** One message for the group: what the bot would have sent on `day`. Labelled SIMULASI throughout. */
+export function replayText(day: string, trades: ReplayTradeBrief[], analysed: number, bullish: string[]): string {
+  const t = (iso: string) => wibTime(new Date(iso));
+  const lines = [`🧪 SIMULASI BOT SINYAL, ${day}`, "(data hari ini diputar ulang, BUKAN sinyal live)", ""];
+  lines.push(`${analysed} saham dianalisis. Condong positif pagi ini: ${bullish.length ? bullish.join(", ") : "tidak ada"}.`, "");
+  if (!trades.length) {
+    lines.push("Tidak ada sinyal BELI yang keluar hari ini: syarat analisis harian dan pemicu intraday tidak terpenuhi bersamaan.");
+  }
+  for (const tr of trades) {
+    const r = `${tr.returnPct >= 0 ? "+" : ""}${String(tr.returnPct).replace(".", ",")}%`;
+    lines.push(`🟢 ${tr.symbol} BELI ${t(tr.buyAt)} di ${rp(tr.buy)}`);
+    if (tr.stillOpen) lines.push(`   Masih terbuka di penutupan, posisi ${r}`);
+    else lines.push(`   🔴 JUAL ${tr.sellAt ? t(tr.sellAt) : "?"} di ${rp(tr.sell as number)} (${EXIT_SHORT[tr.exitKind ?? ""] ?? tr.exitKind}), hasil ${r}`);
+  }
+  if (trades.length) {
+    const avg = trades.reduce((s, x) => s + x.returnPct, 0) / trades.length;
+    lines.push("", `Rata-rata hasil: ${avg >= 0 ? "+" : ""}${avg.toFixed(2).replace(".", ",")}% per sinyal (belum termasuk fee).`);
+  }
+  lines.push("", "Satu hari simulasi tidak membuktikan strategi ini bekerja.", "", DISCLAIMER_ID);
+  return lines.join("\n");
+}

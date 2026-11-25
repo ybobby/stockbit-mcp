@@ -15,6 +15,7 @@
  * Off unless `ANTHROPIC_API_KEY` is set (or another credential the SDK resolves, see its docs).
  */
 import Anthropic from "@anthropic-ai/sdk";
+import { spawn } from "node:child_process";
 import type { BuyPlan, DailyContext, WhaleHit } from "./engine.js";
 
 export interface AiReview {
@@ -72,25 +73,46 @@ export function noteIsGrounded(note: string, evidence: unknown): boolean {
   );
 }
 
+function evidenceOf({ plan, ctx, whales }: { plan: BuyPlan; ctx: DailyContext; whales: WhaleHit[] }) {
+  return {
+    sinyal: plan,
+    analisisHarian: {
+      tanggal: ctx.asOf,
+      condong: ctx.lean,
+      skor: ctx.score,
+      keyakinanBukti: ctx.confidence,
+      penutupanKemarin: ctx.prevClose,
+      tertinggiKemarin: ctx.prevHigh,
+      terendahKemarin: ctx.prevLow,
+      atr14: ctx.atr,
+      pilar: ctx.pillars,
+    },
+    whaleHariIni: whales.map((w) => ({ jenis: w.kind, jam: w.at, ringkasan: w.text })),
+  };
+}
+
+/** Parse the model's JSON answer into a review, applying the grounding check. Null when unusable. */
+export function reviewFromText(text: string, evidence: unknown): AiReview | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end <= start) return null;
+  let parsed: { keputusan?: string; catatan?: string };
+  try {
+    parsed = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (parsed.keputusan !== "kirim" && parsed.keputusan !== "batal") return null;
+  const raw = (parsed.catatan ?? "").trim().slice(0, 500);
+  return { approve: parsed.keputusan === "kirim", note: raw && noteIsGrounded(raw, evidence) ? raw : null };
+}
+
+/** Through the Anthropic API. Needs ANTHROPIC_API_KEY (billed per use, separate from a Claude plan). */
 export function claudeReviewer(opts: { model?: string; client?: Anthropic } = {}): AiReviewer {
   const client = opts.client ?? new Anthropic();
   const model = opts.model ?? DEFAULT_MODEL;
-  return async ({ plan, ctx, whales }) => {
-    const evidence = {
-      sinyal: plan,
-      analisisHarian: {
-        tanggal: ctx.asOf,
-        condong: ctx.lean,
-        skor: ctx.score,
-        keyakinanBukti: ctx.confidence,
-        penutupanKemarin: ctx.prevClose,
-        tertinggiKemarin: ctx.prevHigh,
-        terendahKemarin: ctx.prevLow,
-        atr14: ctx.atr,
-        pilar: ctx.pillars,
-      },
-      whaleHariIni: whales.map((w) => ({ jenis: w.kind, jam: w.at, ringkasan: w.text })),
-    };
+  return async (input) => {
+    const evidence = evidenceOf(input);
     try {
       const response = await client.messages.create({
         model,
@@ -102,13 +124,61 @@ export function claudeReviewer(opts: { model?: string; client?: Anthropic } = {}
       if (response.stop_reason !== "end_turn") return null;
       const text = response.content.find((b) => b.type === "text");
       if (!text || text.type !== "text") return null;
-      const parsed = JSON.parse(text.text) as { keputusan?: string; catatan?: string };
-      if (parsed.keputusan !== "kirim" && parsed.keputusan !== "batal") return null;
-      const raw = (parsed.catatan ?? "").trim().slice(0, 500);
-      return { approve: parsed.keputusan === "kirim", note: raw && noteIsGrounded(raw, evidence) ? raw : null };
+      return reviewFromText(text.text, evidence);
     } catch {
       // Deliberately swallowed: see the module note. The caller records that no review happened.
       return null;
     }
   };
+}
+
+/**
+ * Through Claude Code on this machine (`claude -p`), so the review runs on the Claude plan the user
+ * is already signed in with (Pro/Max) instead of a separately billed API key.
+ *
+ * `ANTHROPIC_API_KEY` is removed from the child's environment: with it set, Claude Code would bill
+ * the API instead of the plan, which is the opposite of why this option exists. No tools are
+ * granted: in print mode nothing that needs approval can run, and the prompt asks for JSON only.
+ */
+export function claudeCodeReviewer(opts: { command?: string; model?: string; timeoutMs?: number } = {}): AiReviewer {
+  const command = opts.command ?? "claude";
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+  return (input) =>
+    new Promise((resolve) => {
+      const evidence = evidenceOf(input);
+      const prompt =
+        `${SYSTEM}\n\nJawab HANYA dengan satu objek JSON: {"keputusan": "kirim" atau "batal", "catatan": "..."}.` +
+        ` Tanpa teks lain.\n\nData sinyal (JSON):\n${JSON.stringify(evidence)}`;
+      const env = { ...process.env };
+      delete env.ANTHROPIC_API_KEY;
+      const args = ["-p", "--output-format", "text"];
+      if (opts.model) args.push("--model", opts.model);
+      let out = "";
+      let done = false;
+      const finish = (v: AiReview | null) => {
+        if (done) return;
+        done = true;
+        resolve(v);
+      };
+      let child;
+      try {
+        child = spawn(command, args, { env, stdio: ["pipe", "pipe", "ignore"] });
+      } catch {
+        return finish(null);
+      }
+      const timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        finish(null);
+      }, timeoutMs);
+      child.on("error", () => {
+        clearTimeout(timer);
+        finish(null);
+      });
+      child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        finish(code === 0 ? reviewFromText(out, evidence) : null);
+      });
+      child.stdin.end(prompt);
+    });
 }

@@ -25,6 +25,7 @@ export const SIGNALS_COMMANDS: CommandTable = {
     valueFlags: {
       "--max-buys": { placeholder: "N", help: "BUY messages per day (default 3)" },
       "--max-open": { placeholder: "N", help: "signals open at once (default 5)" },
+      "--ai": { placeholder: "api|claude-code|off", help: "who reviews a BUY (default: api when ANTHROPIC_API_KEY is set, else off)" },
     },
     positionals: [
       { name: "scope", required: false },
@@ -34,7 +35,24 @@ export const SIGNALS_COMMANDS: CommandTable = {
       "With no scope, a built-in list of 25 liquid IDX stocks is watched. `all` is not accepted:",
       "each symbol is analysed every morning, and the whole market is too many requests.",
       "Telegram: STOCKBIT_TELEGRAM_BOT_TOKEN and STOCKBIT_TELEGRAM_CHAT_ID (the whale watch's group).",
-      "AI note and veto: ANTHROPIC_API_KEY; model from STOCKBIT_SIGNALS_MODEL (default claude-opus-5-5).",
+      "AI note and veto: --ai api (ANTHROPIC_API_KEY, billed per use; model from STOCKBIT_SIGNALS_MODEL,",
+      "default claude-opus-5-5) or --ai claude-code (runs `claude -p` on this machine, on your Claude plan).",
+    ],
+  },
+  replay: {
+    summary: "replay one day of this week through the bot: what it would have sent, when, and the result",
+    usage: "[BBCA,ANTM|watchlist[:Name]] [YYYY-MM-DD]",
+    flags: {
+      "--send": "post one SIMULASI summary to Telegram",
+      "--pretty": "indented JSON",
+    },
+    valueFlags: {
+      "--ai": { placeholder: "api|claude-code|off", help: "review each BUY as the live bot would (default off)" },
+      "--max-buys": { placeholder: "N", help: "BUY messages per day (default 3)" },
+    },
+    positionals: [
+      { name: "scope", required: false },
+      { name: "date", required: false },
     ],
   },
   status: {
