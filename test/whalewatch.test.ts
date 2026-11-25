@@ -150,8 +150,9 @@ test("an expired session sends one message and ends the loop as auth", async () 
   const summary = await runWhaleWatch(h.deps, { intervalMs: 60_000 });
   assert.equal(summary.ended, "auth");
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0], /sesi login Stockbit sudah tidak berlaku/);
-  assert.match(h.sent[0], /stockbit-auth login/);
+  assert.match(h.sent[0], /sesi login ke sumber data sudah tidak berlaku/);
+  assert.match(h.sent[0], /login ulang/);
+  assert.doesNotMatch(h.sent[0], /stockbit/i, "the group message names no provider");
 });
 
 test("repeated failures announce an outage once, then announce recovery", async () => {
@@ -239,9 +240,14 @@ test("the broker block names its date and says it is not live", () => {
   assert.match(lines[0], /^Data broker 24 Nov 2026 \(data akhir hari, BUKAN live\):$/);
   assert.match(lines[1], /Pembeli terbesar: AA \(asing\), 1\.000 lot, Rp 1,00 M, pola institusi/);
   assert.match(lines[2], /Penjual terbesar: BB \(lokal\), 900 lot, Rp 900 jt, pola ritel/, "sell magnitudes, not the wire's negative sign");
-  assert.match(lines[3], /top 3\): Acc/);
+  assert.match(lines[3], /3 broker teratas: Acc/);
   const text = whaleText(surge, OPEN, lines);
   assert.ok(text.indexOf("BUKAN live") > text.indexOf(surge.id!.headline), "context comes after the live measurement");
+});
+
+test("the Telegram text names no data provider, so the alert reads as a market observation", () => {
+  const text = whaleText(surge, OPEN, brokerContextLines(ctx()));
+  assert.doesNotMatch(text, /stockbit/i);
 });
 
 test("a signal without Indonesian text still sends, in English", () => {

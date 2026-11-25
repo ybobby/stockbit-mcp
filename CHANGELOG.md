@@ -12,6 +12,11 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
 
 ### Added
 
+- The whale watch's Telegram text no longer names Stockbit: the alerts are meant to read as market
+  observations for any audience. The movers-list label, the broker block's top-3 reading and the
+  expired-session notice were the three places it appeared; a test now asserts the group text
+  carries no provider name. The operator still gets the fix (`stockbit-auth login`) on the
+  `stopped-auth` log line. English log and stdout text are unchanged.
 - `stockbit-live watch|signals --wide`: also reads Stockbit's top value, volume and frequency
   movers lists (`/order-trade/market-mover`, 50 rows each, three extra GETs per poll) and watches
   the symbols they add beyond top-stock's hundred. top-stock ranks by rupiah, so cheap stocks that
