@@ -49,6 +49,21 @@ export const LIVE_COMMANDS: CommandTable = {
     ],
     variadicTail: true, // Everything after the time frame is the free-text prompt.
   },
+  watch: {
+    summary: "run the detectors all session and send each alert to Telegram (whale watch)",
+    usage: "<BBCA,ANTM|watchlist[:Name]|all> <30s|1m|5m> [prompt]",
+    flags: {
+      "--dry-run": "detect and print, but send nothing to Telegram",
+      "--no-context": "skip the previous session's broker summary under each alert",
+      "--always": "poll even outside IDX hours (testing only: a shut market reads as flat)",
+      "--pretty": "indented JSON, for reading by eye",
+    },
+    positionals: [
+      { name: "scope", required: true },
+      { name: "time-frame", required: true },
+    ],
+    variadicTail: true, // Everything after the time frame is the free-text prompt.
+  },
   explain: {
     summary: "name the prints behind a move, from the (8-10 minutes late) tape",
     usage: "<SYMBOL> [HH:MM:SS] [HH:MM:SS]",

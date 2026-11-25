@@ -17,6 +17,9 @@ node dist/bin/stockbit-auth.js login
 node dist/bin/stockbit-auth.js status
 ```
 
+Alert transaksi besar ("whale") intraday ke Telegram sepanjang sesi: `stockbit-live watch`. Panduan lengkap
+ada di [Whale watch](docs/WHALE-WATCH.md).
+
 Perlu Node.js 22+ dan browser Chromium. Login langsung di halaman Stockbit. Jangan kirim password,
 OTP, atau PIN melalui chat. Untuk membaca portofolio sekuritas, jalankan
 `node dist/bin/stockbit-auth.js trading-login` dan masukkan PIN di terminal sendiri.

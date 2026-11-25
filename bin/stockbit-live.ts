@@ -9,6 +9,8 @@
  *   stockbit-live scan BBCA 30s --top 5     cap the rows printed (default 10)
  *   stockbit-live scan BBCA 30s --always    measure even outside IDX hours
  *   stockbit-live scan BBCA 30s --pretty    indented JSON, for reading by eye
+ *   stockbit-live watch all 1m              detect all session, alert to Telegram (whale watch)
+ *   stockbit-live watch all 1m --dry-run    ...printing alerts instead of sending them
  *
  * ## Why a CLI and not an MCP tool
  *
@@ -42,6 +44,14 @@ import { attribute, parseTape } from "../src/live/attribution.js";
 import { readBandar } from "../src/live/bandar.js";
 import { getRunningTrade } from "../src/core/market.js";
 import { getBrokerSummary } from "../src/core/marketdetectors.js";
+import { telegramTargetFromEnv, postTelegram } from "../src/alerts/notify.js";
+import {
+  brokerContextLines,
+  elapsedTradingSeconds,
+  logWhaleEvent,
+  runWhaleWatch,
+  whaleLogPath,
+} from "../src/live/whalewatch.js";
 
 /**
  * The longest window one `scan` may measure over.
@@ -270,11 +280,7 @@ async function signals(): Promise<void> {
   }
 
   // Trading seconds elapsed today, for the "what should this window have carried" baseline.
-  const elapsedSeconds = () => {
-    const wib = new Date(Date.now() + 7 * 3600_000);
-    const mins = wib.getUTCHours() * 60 + wib.getUTCMinutes();
-    return Math.max(60, (Math.min(mins, 16 * 60) - 9 * 60) * 60);
-  };
+  const elapsedSeconds = () => elapsedTradingSeconds(new Date());
 
   const watcher = new SignalWatcher({ scope: resolved, spec, elapsedSeconds });
 
@@ -317,6 +323,114 @@ async function signals(): Promise<void> {
   }
 }
 
+/* -------------------------------- watch --------------------------------- */
+
+/**
+ * The whale watch: `signals` in a loop, all session, with every emitted alert sent to Telegram.
+ *
+ * Output is one JSON object per line (NDJSON) on stdout — one per pass, alert, and state change —
+ * so a supervisor can tail it, and the same events go to `whale-alerts.log`. See
+ * `src/live/whalewatch.ts` for what the loop does and why.
+ */
+async function watch(): Promise<void> {
+  const [, scopeToken, intervalToken, ...promptWords] = positionals();
+
+  let scope, interval;
+  try {
+    scope = parseScope(scopeToken);
+    interval = parseInterval(intervalToken);
+  } catch (err) {
+    if (err instanceof ScopeParseError || err instanceof IntervalParseError) {
+      fail("bad-arguments", err.message, "Usage: stockbit-live watch <BBCA,ANTM|watchlist|all> <30s|1m|5m> [prompt]");
+    }
+    throw err;
+  }
+
+  const dryRun = flag("dry-run");
+  const telegram = telegramTargetFromEnv();
+  // Checked before anything else touches the network. A watcher that runs all day and delivers
+  // nowhere is the silent failure this whole feature exists to avoid.
+  if (!dryRun && !telegram) {
+    fail(
+      "telegram-not-configured",
+      "STOCKBIT_TELEGRAM_BOT_TOKEN and STOCKBIT_TELEGRAM_CHAT_ID must both be set, and the chat id must be numeric.",
+      "Set them in the environment (never as flags), or pass --dry-run to print alerts instead of sending them.",
+    );
+  }
+
+  const spec = compilePrompt(promptWords.join(" "));
+  let resolved;
+  try {
+    resolved = await resolveScope(scope);
+  } catch (err) {
+    if (err instanceof StockbitError && err.kind === "auth") {
+      fail("auth", err.message, "Run /stockbit-status, then /stockbit-auth.");
+    }
+    fail("scope-unresolved", err instanceof Error ? err.message : String(err));
+  }
+
+  let stopping = false;
+  const stop = () => {
+    stopping = true;
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+
+  // Sleeps in one-second slices so Ctrl-C is answered within a second rather than after a full
+  // interval of apparent hanging.
+  const nap = async (ms: number) => {
+    const until = Date.now() + ms;
+    while (!stopping && Date.now() < until) await sleep(Math.min(1000, until - Date.now()));
+  };
+
+  for (const line of describeSpec(spec)) process.stderr.write(`prompt: ${line}\n`);
+  for (const line of spec.downgrades) process.stderr.write(`prompt: ${line}\n`);
+  process.stderr.write(
+    `whale watch: ${describeScope(resolved)}, ${describeInterval(interval)}${dryRun ? ", DRY RUN (nothing sent)" : ", alerts to Telegram"}; log at ${whaleLogPath()}. Ctrl-C to stop.\n`,
+  );
+
+  const summary = await runWhaleWatch(
+    {
+      newWatcher: () => new SignalWatcher({ scope: resolved, spec, elapsedSeconds: () => elapsedTradingSeconds(new Date()) }),
+      now: () => new Date(),
+      sleep: nap,
+      inWindow: (now) => flag("always") || isWithinPollingWindow(now),
+      send: async (text) => {
+        if (dryRun || !telegram) {
+          process.stderr.write(`\n${text}\n\n`);
+          return null;
+        }
+        return postTelegram(telegram, text);
+      },
+      brokerContext: flag("no-context")
+        ? undefined
+        : async (symbol) => {
+            // YESTERDAY, not LATEST: during an open session LATEST is today, and today's broker rows
+            // are empty by exchange rule.
+            const raw = await getBrokerSummary({ symbol, period: "YESTERDAY" });
+            return brokerContextLines(readBandar({ ...(raw as object), symbol }));
+          },
+      record: (event) => {
+        const line = { ...event, ...(dryRun ? { dryRun: true } : {}) };
+        try {
+          logWhaleEvent(line);
+        } catch (err) {
+          process.stderr.write(`log write failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
+        emit(line);
+      },
+      stopped: () => stopping,
+      isAuthError: (err) => err instanceof StockbitError && err.kind === "auth",
+    },
+    { intervalMs: interval.ms },
+  );
+
+  emit({ ok: summary.ended !== "auth", type: "summary", ...summary });
+  // Exit 3, distinct from the 1 every other failure uses, so a supervisor can be told not to restart
+  // into the same expired session (systemd: RestartPreventExitStatus=3). See docs/WHALE-WATCH.md.
+  if (summary.ended === "auth") process.exit(3);
+}
+
 /* ------------------------------- explain -------------------------------- */
 
 /** Feature 4: name the prints behind a move, from the (late) tape. */
@@ -357,7 +471,7 @@ async function brokers(): Promise<void> {
 }
 
 const COMMANDS_HINT =
-  "Commands: scan <scope> <time-frame> · signals <scope> <time-frame> [prompt] · explain <SYMBOL> · brokers <SYMBOL>";
+  "Commands: scan <scope> <time-frame> · signals <scope> <time-frame> [prompt] · watch <scope> <time-frame> [prompt] · explain <SYMBOL> · brokers <SYMBOL>";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -413,6 +527,7 @@ async function main(): Promise<void> {
 
   if (command === "scan") return scan();
   if (command === "signals") return signals();
+  if (command === "watch") return watch();
   if (command === "explain") return explain();
   if (command === "brokers") return brokers();
   // Unreachable while the dispatch above covers every key in LIVE_COMMANDS; a spec entry added

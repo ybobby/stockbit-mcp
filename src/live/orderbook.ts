@@ -117,7 +117,14 @@ function ladder(rows: unknown): BookLevel[] {
 /** Parse a raw `orderbook` response. Returns null when the payload is not a readable book. */
 export function parseOrderBook(payload: unknown): OrderBook | null {
   if (!payload || typeof payload !== "object") return null;
-  const d = payload as Record<string, unknown>;
+  // `getJson("orderbook")` returns the wire's envelope, `{ message, data: { symbol, ... } }`, and
+  // `src/core/pricefeed.ts` unwraps `.data` before reading. The live watcher passed the envelope
+  // straight in, so every book read as "did not parse" and every book detector was silently blind.
+  // Accept both shapes: the envelope when it carries a `data` object, the bare book otherwise.
+  const outer = payload as Record<string, unknown>;
+  const d = (
+    typeof outer.symbol !== "string" && outer.data && typeof outer.data === "object" ? outer.data : outer
+  ) as Record<string, unknown>;
 
   const symbol = typeof d.symbol === "string" ? d.symbol.trim().toUpperCase() : "";
   const lastPrice = readRaw(d.lastprice) ?? readRaw(d.close);

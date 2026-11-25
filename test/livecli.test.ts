@@ -29,7 +29,7 @@ import { LIVE_BIN, LIVE_COMMANDS } from "../src/live/cli.ts";
 after(() => rmSync(STORE, { recursive: true, force: true }));
 
 /** Hard-coded on purpose — see authcli.test.ts on why this list is not derived from the spec. */
-const SUBCOMMANDS = ["scan", "signals", "explain", "brokers"];
+const SUBCOMMANDS = ["scan", "signals", "watch", "explain", "brokers"];
 
 function gate(cmd: string, argv: string[]): string {
   return gateCommandLine(LIVE_BIN, LIVE_COMMANDS, cmd, argv, () => {});

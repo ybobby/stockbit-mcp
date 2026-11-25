@@ -10,8 +10,29 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
 
 ## [Unreleased]
 
+### Added
+
+- `stockbit-live watch`: the live detectors run all session and every alert the alert engine lets
+  through is sent to Telegram. `signals` answered one question and exited, which is the wrong shape
+  for "buzz my phone when large money lands". No detector or threshold changed; the loop adds the day
+  boundary (fresh baseline and alert budget each morning), the previous session's broker summary under
+  each alert, labelled end-of-day and dated so it cannot read as live, and loud-once failure: an
+  expired session sends one message and exits 3 so a supervisor does not restart into it, and three
+  failed passes in a row say the quiet is not a quiet market. Events go to stdout as NDJSON and to
+  `whale-alerts.log` before Telegram is tried. Guide: [`docs/WHALE-WATCH.md`](docs/WHALE-WATCH.md).
+- Every live detector now also describes its finding in plain Indonesian (`Signal.id`), written in
+  the same function from the same numbers as the English so the two cannot disagree, and the whale
+  watch sends that text to Telegram. The broker block, severity and failure messages are Indonesian
+  too. The wording keeps the English's limits: no buyer names, no direction a value surge cannot see,
+  and "manipulasi" only in the UMA disclaimer's negation.
+
 ### Fixed
 
+- The live watcher's order-book detectors (`band-approach`, `book-imbalance`, `wall-change`,
+  `uma-flag`, `floor-locked`) never fired: `parseOrderBook` was handed the wire's `{ message, data }`
+  envelope, which `src/core/pricefeed.ts` unwraps and the watcher did not, so every book was reported
+  as "did not parse". Found on the first live dry-run of `stockbit-live watch` (12 of 12 book reads
+  failing per pass). The parser now accepts either shape.
 - Login capture and HAR import now accept main-session responses from `exodus.api.stockbit.com`,
   including the final new-device phone verification response. Token sources use exact hostname
   checks so unrelated URLs containing a Stockbit host name are rejected.

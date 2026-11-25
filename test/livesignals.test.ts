@@ -110,6 +110,11 @@ test("a regular stock is not mistaken for a call auction just because iepiev exi
 
 test("an unreadable payload returns null rather than an empty book", () => {
   // An empty book would read as "no depth", which is a real and very different market state.
+  // The wire's envelope, exactly as getJson returns it. The watcher passed this shape for its whole
+  // life and every book came back null, which blinded all five book detectors without an error.
+  const wrapped = parseOrderBook({ message: "Successfully retrieved", data: BRMS });
+  assert.ok(wrapped, "the { message, data } envelope must parse");
+  assert.deepEqual(wrapped, parseOrderBook(BRMS));
   assert.equal(parseOrderBook(null), null);
   assert.equal(parseOrderBook({ symbol: "BRMS" }), null);
 });
@@ -502,3 +507,27 @@ test("foreign, local and government investor types are all recognised", () => {
   assert.equal(b.buyers[0].investor, "government");
   assert.equal(b.buyers[1].investor, "foreign");
 });
+
+/* --------------------------- plain-Indonesian text --------------------------- */
+
+test("every detector that fires also says it in plain Indonesian, with the same numbers", () => {
+  const b = parseOrderBook(BRMS)!;
+  const fired = [
+    floorLocked({ ...b, lastPrice: b.arb ?? 0, bid: [], offer: [{ price: b.arb ?? 0, shares: 1_000_000, queue: 1 }] }),
+    umaFlag({ ...b, uma: true }),
+    awakening({ symbol: "TEST", todayValue: 9e9, previousSessionValue: 1e9 }),
+  ].filter((s) => s !== null);
+  assert.equal(fired.length, 3);
+  for (const s of fired) {
+    assert.ok(s.id, `${s.kind} has no Indonesian text`);
+    assert.ok(s.id.headline.startsWith(s.symbol), s.id.headline);
+    assert.ok(s.id.detail.length > 0);
+  }
+  const aw = fired[2]!;
+  assert.match(aw.id!.detail[0], /Rp 9,00 M, sudah 9,0x seluruh sesi sebelumnya \(Rp 1,00 M\)/);
+  // Manipulation may only appear negated, as in the UMA disclaimer.
+  for (const s of fired) for (const line of [s.id!.headline, ...s.id!.detail]) {
+    if (/manipulasi/i.test(line)) assert.match(line, /bukan bukti manipulasi/);
+  }
+});
+
