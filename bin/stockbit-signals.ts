@@ -324,7 +324,10 @@ async function replay(): Promise<void> {
   // Series only for the symbols that traded unless --all-series, thinned to one point per 5 minutes.
   const traded = new Set(result.trades.map((t) => t.symbol));
   const keep = (s: string) => flag("all-series") || traded.has(s);
-  const thin = (pts: PricePoint[]) => pts.filter((p, i) => i === pts.length - 1 || new Date(p.at).getUTCMinutes() % 5 === 0);
+  // A minute series longer than the session's minutes puts two closes on one approximate minute;
+  // keep the later one so a chart gets one point per time.
+  const thin = (pts: PricePoint[]) =>
+    pts.filter((p, i) => (i === pts.length - 1 || new Date(p.at).getUTCMinutes() % 5 === 0) && pts[i + 1]?.at !== p.at);
   emit({
     ok: true,
     ...result,
