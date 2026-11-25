@@ -12,9 +12,11 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
 
 ### Changed
 
-- `stockbit-live watch`: the Indonesian Telegram text no longer names the data provider. The
-  broker block says "Bandar detector (top 3)", a `--wide` symbol is "daftar top ... harian", and
-  the expired-session notice says to log in again on the machine running the watch. A test pins it.
+- The whale watch's Telegram text no longer names Stockbit: the alerts are meant to read as market
+  observations for any audience. The movers-list label, the broker block's top-3 reading and the
+  expired-session notice were the three places it appeared; a test now asserts the group text
+  carries no provider name. The operator still gets the fix (`stockbit-auth login`) on the
+  `stopped-auth` log line. English log and stdout text are unchanged.
 
 ### Added
 

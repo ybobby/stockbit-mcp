@@ -168,7 +168,7 @@ test("a movers-only alert says where it came from, in both languages", () => {
   };
   const t = tagWide(s, ["volume", "frequency"]);
   assert.equal(t.detail.at(-1), "From Stockbit's top volume/frequency movers list, outside the top-stock hundred.");
-  assert.equal(t.id?.detail.at(-1), "Saham ini masuk lewat daftar top volume/frekuensi harian, di luar 100 saham utama.");
+  assert.equal(t.id?.detail.at(-1), "Saham ini masuk lewat daftar top volume/frekuensi bursa hari ini, di luar 100 saham utama.");
   assert.deepEqual(s.detail, ["a"], "the original signal is not mutated");
 });
 
