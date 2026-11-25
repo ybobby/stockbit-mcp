@@ -10,6 +10,12 @@ name; see [`CONTEXT.md`](CONTEXT.md) for the rest of the evidence ladder.
 
 ## [Unreleased]
 
+### Changed
+
+- `stockbit-live watch`: the Indonesian Telegram text no longer names the data provider. The
+  broker block says "Bandar detector (top 3)", a `--wide` symbol is "daftar top ... harian", and
+  the expired-session notice says to log in again on the machine running the watch. A test pins it.
+
 ### Added
 
 - `stockbit-live watch|signals --wide`: also reads Stockbit's top value, volume and frequency

@@ -120,7 +120,7 @@ export function brokerContextLines(ctx: BandarContext | null): string[] | null {
   if (ctx.buyers[0]) lines.push(row("Pembeli", ctx.buyers[0]));
   if (ctx.sellers[0]) lines.push(row("Penjual", ctx.sellers[0]));
   const t3 = ctx.labels.find((l) => l.scope === "top3");
-  if (t3?.label) lines.push(`• Bandar detector Stockbit (top 3): ${t3.label}.`);
+  if (t3?.label) lines.push(`• Bandar detector (top 3): ${t3.label}.`);
   if (!lines.length) return null;
   const when =
     ctx.from && ctx.to ? (ctx.from === ctx.to ? tanggal(ctx.from) : `${tanggal(ctx.from)} sampai ${tanggal(ctx.to)}`) : "sesi sebelumnya";
@@ -269,7 +269,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       if (deps.isAuthError(err)) {
         // Polling cannot fix this, and a loop that kept trying would sit silently forever.
         await send(
-          `⛔ Whale watch berhenti: sesi login Stockbit sudah tidak berlaku.\nLogin ulang (stockbit-auth login), lalu jalankan whale watch lagi.\n${wibClock(now)} WIB`,
+          `⛔ Whale watch berhenti: sesi login ke sumber data sudah tidak berlaku.\nLogin ulang di komputer yang menjalankan whale watch, lalu jalankan lagi.\n${wibClock(now)} WIB`,
           { type: "stopped-auth", at: now.toISOString() },
         );
         summary.ended = "auth";

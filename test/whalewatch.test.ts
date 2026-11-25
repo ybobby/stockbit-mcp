@@ -150,8 +150,8 @@ test("an expired session sends one message and ends the loop as auth", async () 
   const summary = await runWhaleWatch(h.deps, { intervalMs: 60_000 });
   assert.equal(summary.ended, "auth");
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0], /sesi login Stockbit sudah tidak berlaku/);
-  assert.match(h.sent[0], /stockbit-auth login/);
+  assert.match(h.sent[0], /sesi login ke sumber data sudah tidak berlaku/);
+  assert.match(h.sent[0], /Login ulang/);
 });
 
 test("repeated failures announce an outage once, then announce recovery", async () => {
@@ -242,6 +242,11 @@ test("the broker block names its date and says it is not live", () => {
   assert.match(lines[3], /top 3\): Acc/);
   const text = whaleText(surge, OPEN, lines);
   assert.ok(text.indexOf("BUKAN live") > text.indexOf(surge.id!.headline), "context comes after the live measurement");
+});
+
+test("the Telegram text never names the data provider", () => {
+  const text = whaleText(surge, OPEN, brokerContextLines(ctx()));
+  assert.doesNotMatch(text, /stockbit/i, "posts are meant to read as provider-neutral");
 });
 
 test("a signal without Indonesian text still sends, in English", () => {
