@@ -25,7 +25,8 @@ sebelumnya** (akhir hari), dan diberi label dengan tanggalnya. Itu konteks, buka
 Jumlah alert ke Telegram **tidak dibatasi**. Yang menyaring adalah detektornya sendiri, ditambah
 tiga pengaman: cooldown 15 menit untuk sinyal yang sama di saham yang sama (kecuali sinyal baru 2x
 lebih kuat), 15 menit pertama dan menjelang penutupan hanya meloloskan sinyal `critical`, dan kalau
->40% saham memicu sinyal yang sama, yang dikirim cukup satu pesan "market-wide". Alert `wall-change`
+>40% saham memicu sinyal yang sama, yang dikirim cukup satu pesan "market-wide". Sinyal ⛔ `floor-locked` (terkunci
+di ARB) hanya dikirim sekali per saham per hari, karena kondisi itu biasanya bertahan sampai tutup. Alert `wall-change`
 hanya dikirim kalau antrean yang muncul atau ditarik bernilai minimal Rp1 miliar (`wallMinValue` di
 `src/live/signals.ts`). (Perintah `stockbit-live signals` tetap memakai batas lama 5 per interval
 dan 25 per sesi.)

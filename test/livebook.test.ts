@@ -299,3 +299,17 @@ test("a wall worth less than the rupiah floor is not reported", () => {
   big.bid[0] = lvl(750, 3_000_000); // +2,000,000 shares at 750 = Rp1,5 M
   assert.ok(wallChange({ book: parseOrderBook(big)!, previous: before, tradedShares: 0 }, DEFAULTS));
 });
+
+test("floor-locked is sent once per symbol per session, however long the lock lasts", () => {
+  const engine = new AlertEngine({ ...FATIGUE_DEFAULTS, maxPerInterval: Infinity, maxPerSession: Infinity });
+  const locked = (symbol: string): Signal => ({ ...sig(symbol), kind: "floor-locked", severity: "critical", surprise: 10 });
+  const t0 = new Date("2026-11-26T04:00:00Z").getTime();
+  assert.equal(engine.process([locked("MPXL")], new Date(t0), 1_000).emitted.length, 1);
+  for (const minutes of [16, 60, 180]) {
+    const r = engine.process([locked("MPXL")], new Date(t0 + minutes * 60_000), 1_000);
+    assert.equal(r.emitted.length, 0, `still silent after ${minutes} minutes`);
+  }
+  assert.equal(engine.process([locked("CSMI")], new Date(t0 + 200 * 60_000), 1_000).emitted.length, 1, "another symbol still gets its one");
+  engine.resetSession();
+  assert.equal(engine.process([locked("MPXL")], new Date(t0 + 24 * 3600_000), 1_000).emitted.length, 1, "a new day starts fresh");
+});
