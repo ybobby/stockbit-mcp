@@ -337,7 +337,7 @@ test("a confirmed whale replaces the anomaly that flagged it, and names it as th
   topStock = ["KECL", ...Array.from({ length: 9 }, (_, i) => `QQ${i}`)].map((code, i) => ({
     code, value: { raw: String(1e9 - i) }, lot: { raw: "100000" }, frequency: { raw: "10" },
   }));
-  // Top five levels 90% bid: book-imbalance fires on the second consecutive read.
+  // Top five levels 90% bid: book-imbalance fires on the third consecutive read.
   const book = (value: number, freq: number) => ({
     symbol: "KECL", lastprice: 100, previous: 98, open: 98, high: 101, low: 97, average: 99,
     frequency: freq, value, volume: value / 100, uma: false, notation: [],
@@ -348,9 +348,11 @@ test("a confirmed whale replaces the anomaly that flagged it, and names it as th
   books = { KECL: book(1_000_000_000, 500) };
   const t0 = new Date("2026-11-26T03:30:00Z"); // 10:30 WIB, outside the quiet periods
   await w.pass(t0);
+  books = { KECL: book(1_100_000_000, 510) };
+  await w.pass(new Date(t0.getTime() + 60_000));
   books = { KECL: book(1_200_000_000, 520) };
-  tape = { KECL: [row("KECL", "10:30:50", 100, 20_000, "buy")] };
-  const r = await w.pass(new Date(t0.getTime() + 60_000));
+  tape = { KECL: [row("KECL", "10:31:50", 100, 20_000, "buy")] };
+  const r = await w.pass(new Date(t0.getTime() + 120_000));
   const kinds = r.signals.filter((s) => s.symbol === "KECL").map((s) => s.kind);
   assert.deepEqual(kinds, ["whale"], JSON.stringify(kinds));
   assert.match(r.signals[0].id!.detail.join(" "), /Pemicu: .*berat|Pemicu: /);

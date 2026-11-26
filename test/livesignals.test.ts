@@ -198,11 +198,14 @@ test("top-5 imbalance is computed here, not taken from the API's bid_percent", (
   assert.equal(Math.round(pct), Math.round((bidTop5 / (bidTop5 + offerTop5)) * 100));
 });
 
-test("one poll never fires an imbalance — it must hold across two", () => {
+test("an imbalance fires only when it holds across three readings in a row", () => {
   const heavy = parseOrderBook({ ...BRMS, offer: [lvl(755, 10)], bid: [lvl(750, 10_000_000)] })!;
-  assert.equal(bookImbalance({ book: heavy, previousPercent: null }), null, "first poll has no history");
-  const s = bookImbalance({ book: heavy, previousPercent: 99 });
+  assert.equal(bookImbalance({ book: heavy, previousPercents: [] }), null, "first reading has no history");
+  assert.equal(bookImbalance({ book: heavy, previousPercents: [99] }), null, "two readings are not enough");
+  assert.equal(bookImbalance({ book: heavy, previousPercents: [50, 99] }), null, "the run was broken");
+  const s = bookImbalance({ book: heavy, previousPercents: [40, 98, 99] });
   assert.ok(s);
+  assert.match(s.id!.detail.join(" "), /bertahan di 3 pengecekan berturut-turut \(98%, 99%, 100% beli\)/);
   assert.match(s.detail.join(" "), /intention, not a transaction/);
 });
 

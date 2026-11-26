@@ -13,7 +13,7 @@ bukan sinyal beli atau jual.
 | Sinyal | Artinya |
 | --- | --- |
 | 🐋 `value-surge` | Uang masuk dalam potongan besar: rata-rata nilai per transaksi di window ini jauh di atas rata-rata sesi saham itu (default ≥5x), **dan** nilai di window ini jauh di atas laju normalnya (≥3x), minimal Rp300 juta. |
-| 📚 `book-imbalance` | Top 5 level order book berat sebelah (≥75% bid atau ≤25%) selama dua poll berturut-turut. |
+| 📚 `book-imbalance` | Top 5 level order book berat sebelah (≥75% bid atau ≤25%) selama tiga pengecekan saham itu berturut-turut (untuk saham di rotasi sekitar 10 menit). |
 | 🧱 `wall-change` | Antrian besar di bid atau offer hilang lebih cepat daripada yang bisa dijelaskan oleh transaksi, atau wall baru muncul. |
 | 📏 `band-approach` | Harga sudah menempuh minimal dua pertiga jalan dari penutupan kemarin ke batas ARA/ARB, **dan** sisa antrian menuju batas tinggal sedikit dibanding laju transaksi terakhir. |
 | ⚠️ `uma-flag`, ⛔ `floor-locked` | Saham diberi UMA, atau terkunci di ARB dengan bid kosong. |
@@ -120,7 +120,7 @@ Aktif bawaan di `watch` (matikan dengan `--no-whale`). Setiap menit:
 1. **Saham yang memicu anomali** (maksimal 5, yang paling kuat) dicek running trade-nya: transaksi
    terbaru dengan `sort=desc`, disaring server dengan `minimum_lot`, mundur sampai awal jendela
    anomali.
-2. **Seluruh pasar disapu**: satu sampai tiga request running trade tanpa kode saham, minimal 1.000 lot,
+2. **Seluruh pasar disapu**: satu sampai empat request running trade tanpa kode saham, minimal 1.000 lot,
    melanjutkan dari nomor transaksi terakhir yang sudah dibaca. Ini menangkap transaksi besar di
    saham yang tidak ada di antrean 48.
 3. **Saham yang lolos mendapat slot pantau** (maksimal 5): dicek tiap menit, pesan lanjutan dikirim

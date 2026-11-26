@@ -12,7 +12,7 @@
  * |---|---|
  * | confirmation of flagged stocks | `maxConfirm` (5), one tape page each, two when the window is busy |
  * | watch slots | `maxSlots` (5), one tape page each |
- * | market-wide sweep | `sweepPages` (3) |
+ * | market-wide sweep | `sweepPages` (4) |
  * | average daily value (ADV20) | `maxAdvFetches` (5) stocks, two pages each, cached for the day |
  *
  * Everything goes through `getJson` and the closed route table (`runningTrade`, and `getBars` for the
@@ -195,7 +195,8 @@ export interface ConfirmLimits {
 export const CONFIRM_LIMITS: ConfirmLimits = {
   maxConfirm: 5,
   maxSlots: 5,
-  sweepPages: 3,
+  // 3 ran out of pages in 16 of 107 passes on 2026-11-26 (`sweepGap`).
+  sweepPages: 4,
   confirmPages: 2,
   maxAdvFetches: 5,
   sweepMinimumLot: 1000,

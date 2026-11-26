@@ -158,7 +158,8 @@ interface SymbolMemory {
   /** The cumulative figures from `lastBook`, and when they were read (epoch ms). */
   lastSample?: SymbolSample;
   lastAt?: number;
-  lastImbalance?: number;
+  /** Top-5 bid share of this stock's readings, oldest first, cleared on a gap. */
+  imbalances?: number[];
   /** Previous session's total value, for the awakening detector. */
   previousSessionValue?: number;
 }
@@ -366,7 +367,7 @@ export class SignalWatcher {
         add(bandApproach({ book, recentVolumeShares: d.lots * 100, windowSeconds: d.seconds }, t), c);
       }
       if (this.enabled("book-imbalance")) {
-        add(bookImbalance({ book, previousPercent: fresh ? (m.lastImbalance ?? null) : null }, t), c);
+        add(bookImbalance({ book, previousPercents: fresh ? (m.imbalances ?? []) : [] }, t), c);
       }
       if (d && previousBook && this.enabled("wall-change")) {
         add(wallChange({ book, previous: previousBook, tradedShares: d.lots * 100 }, t), c);
@@ -377,7 +378,8 @@ export class SignalWatcher {
       m.lastBook = book;
       m.lastSample = sample;
       m.lastAt = at;
-      m.lastImbalance = topFiveBidPercent(book) ?? undefined;
+      const share = topFiveBidPercent(book);
+      m.imbalances = share === null ? [] : [...(fresh ? (m.imbalances ?? []) : []), share].slice(-5);
     }
 
     // ---- whale confirmation: anomalies checked against the tape, plus the market-wide sweep ----
