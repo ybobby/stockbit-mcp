@@ -214,6 +214,11 @@ export interface WhaleWatchDeps {
   stopped(): boolean;
   /** True when the error means the Stockbit session is gone and polling cannot recover. */
   isAuthError(err: unknown): boolean;
+  /**
+   * Remembers, across restarts, that the group was told whale watch went into maintenance, so the
+   * first good pass after the restart can say it is back. Absent means no "back" message.
+   */
+  maintenance?: { pending(): boolean; set(): void; clear(): void };
 }
 
 export interface WhaleWatchOptions {
@@ -304,11 +309,13 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
     } catch (err) {
       if (deps.isAuthError(err)) {
         // Polling cannot fix this, and a loop that kept trying would sit silently forever.
+        // The group gets a neutral maintenance notice (owner, 2026-11-26): no login, no provider, no
+        // admin chore. The operator's terminal and log line carry the actual fix.
         await send(
-          `⛔ Whale watch berhenti: sesi login ke sumber data sudah tidak berlaku.\nAdmin perlu login ulang, lalu menjalankan whale watch lagi.\n${wibClock(now)} WIB`,
-          // The group text names no provider; the operator's log line carries the actual fix.
+          `🛠️ Whale watch sedang dalam mode maintenance. Alert berhenti sementara dan akan aktif lagi setelah ada pemberitahuan berikutnya.\n${wibClock(now)} WIB`,
           { type: "stopped-auth", at: now.toISOString(), fix: "stockbit-auth login" },
         );
+        deps.maintenance?.set();
         summary.ended = "auth";
         return summary;
       }
@@ -329,6 +336,14 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       }
       await deps.sleep(opts.intervalMs);
       continue;
+    }
+
+    if (deps.maintenance?.pending()) {
+      await send(`✅ Whale watch aktif kembali. Alert berjalan seperti biasa.\n${wibClock(now)} WIB`, {
+        type: "maintenance-ended",
+        at: now.toISOString(),
+      });
+      deps.maintenance.clear();
     }
 
     if (announcedOutage) {

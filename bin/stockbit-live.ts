@@ -30,6 +30,9 @@
  *
  * **It never places, cancels or modifies an order.** It reads one public market endpoint.
  */
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { stockbitDir } from "../src/paths.js";
 import { sessionClock, isWithinPollingWindow, isWithinWhaleWindow } from "../src/core/sessionclock.js";
 import { CliParseError, formatUsage, gateCommandLine, isHelpToken, isVersionToken } from "../src/cliargs.js";
 import { VERSION } from "../src/version.js";
@@ -332,6 +335,19 @@ async function signals(): Promise<void> {
  * so a supervisor can tail it, and the same events go to `whale-alerts.log`. See
  * `src/live/whalewatch.ts` for what the loop does and why.
  */
+/** A file in the Stockbit folder that says the group was told whale watch is in maintenance. */
+function maintenanceMarker(): { pending(): boolean; set(): void; clear(): void } {
+  const file = join(stockbitDir(), "whale-maintenance");
+  return {
+    pending: () => existsSync(file),
+    set: () => {
+      mkdirSync(stockbitDir(), { recursive: true });
+      writeFileSync(file, `${new Date().toISOString()}\n`, "utf8");
+    },
+    clear: () => rmSync(file, { force: true }),
+  };
+}
+
 async function watch(): Promise<void> {
   const [, scopeToken, intervalToken, ...promptWords] = positionals();
 
@@ -396,6 +412,7 @@ async function watch(): Promise<void> {
       now: () => new Date(),
       sleep: nap,
       inWindow: (now) => flag("always") || isWithinWhaleWindow(now),
+      maintenance: dryRun ? undefined : maintenanceMarker(),
       failureCounts: (now) => flag("always") || sessionClock(now).isTradingHours,
       send: async (text) => {
         if (dryRun || !telegram) {
@@ -433,6 +450,12 @@ async function watch(): Promise<void> {
   );
 
   emit({ ok: summary.ended !== "auth", type: "summary", ...summary });
+  if (summary.ended === "auth") {
+    // The group was only told "maintenance". The operator is told what to actually do.
+    process.stderr.write(
+      "\nSesi login Stockbit sudah tidak berlaku. Login ulang di Terminal:\n  node dist/bin/stockbit-auth.js login\nlalu jalankan whale watch lagi. Grup akan menerima pesan \"aktif kembali\" otomatis.\n",
+    );
+  }
   // Exit 3, distinct from the 1 every other failure uses, so a supervisor can be told not to restart
   // into the same expired session (systemd: RestartPreventExitStatus=3). See docs/WHALE-WATCH.md.
   if (summary.ended === "auth") process.exit(3);

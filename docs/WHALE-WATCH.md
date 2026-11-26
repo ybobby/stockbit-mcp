@@ -254,6 +254,8 @@ sudo systemctl enable --now whale-watch
 journalctl -u whale-watch -f
 ```
 
-Kalau sesi kedaluwarsa, watcher mengirim satu pesan ⛔ lalu berhenti dengan exit 3, dan systemd tidak
+Kalau sesi kedaluwarsa, watcher mengirim satu pesan 🛠️ "mode maintenance" ke grup (tanpa menyebut
+login atau sumber data; instruksi login ulang hanya tampil di Terminal) lalu berhenti dengan exit 3, dan systemd tidak
 mengulanginya (supaya Telegram tidak dibanjiri pesan yang sama). Setelah login ulang, jalankan
-`sudo systemctl restart whale-watch`. Crash lain tetap di-restart otomatis.
+`sudo systemctl restart whale-watch`. Putaran sukses pertama sesudahnya mengirim "✅ Whale watch aktif
+kembali" sekali (penandanya file `~/.stockbit/whale-maintenance`). Crash lain tetap di-restart otomatis.

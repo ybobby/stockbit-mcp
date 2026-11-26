@@ -382,7 +382,6 @@ export function bookImbalance(input: ImbalanceInput, t: Thresholds = DEFAULTS): 
   const need = Math.max(2, t.imbalancePolls ?? 3) - 1;
   if (pct === null || input.previousPercents.length < need) return null;
   const earlier = input.previousPercents.slice(-need);
-  const previousPercent = earlier[earlier.length - 1];
 
   const bidHeavy = pct >= t.imbalanceHigh && earlier.every((p) => p >= t.imbalanceHigh);
   const offerHeavy = pct <= t.imbalanceLow && earlier.every((p) => p <= t.imbalanceLow);
@@ -411,8 +410,8 @@ export function bookImbalance(input: ImbalanceInput, t: Thresholds = DEFAULTS): 
         : `${book.symbol}: antrean jual jauh lebih tebal dari antrean beli`,
       detail: [
         bidHeavy
-          ? `Di 5 level teratas order book, ${numId(pct)}% antrean adalah beli (bid). Pengecekan sebelumnya ${numId(previousPercent)}%.`
-          : `Di 5 level teratas order book, antrean beli (bid) hanya ${numId(pct)}%, sisanya antrean jual. Pengecekan sebelumnya ${numId(previousPercent)}%.`,
+          ? `Di 5 level teratas order book, ${numId(pct)}% antrean adalah beli (bid).`
+          : `Di 5 level teratas order book, antrean beli (bid) hanya ${numId(pct)}%, sisanya antrean jual.`,
         `Kondisi ini bertahan di ${numId(earlier.length + 1)} pengecekan berturut-turut (${[...earlier, pct].map((p) => `${numId(p)}%`).join(", ")} beli).`,
         "Antrean belum tentu jadi transaksi dan bisa ditarik kapan saja.",
       ],

@@ -152,9 +152,24 @@ test("an expired session sends one message and ends the loop as auth", async () 
   const summary = await runWhaleWatch(h.deps, { intervalMs: 60_000 });
   assert.equal(summary.ended, "auth");
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0], /sesi login ke sumber data sudah tidak berlaku/);
-  assert.match(h.sent[0], /login ulang/);
-  assert.doesNotMatch(h.sent[0], /stockbit/i, "the group message names no provider");
+  assert.match(h.sent[0], /mode maintenance/);
+  assert.match(h.sent[0], /aktif lagi setelah ada pemberitahuan berikutnya/);
+  assert.doesNotMatch(h.sent[0], /stockbit|login|admin/i, "the group gets a neutral notice, not the chore");
+});
+
+test("after a maintenance stop, the first good pass of the next run tells the group it is back, once", async () => {
+  let flagged = false;
+  const maintenance = { pending: () => flagged, set: () => { flagged = true; }, clear: () => { flagged = false; } };
+  const down = harness([new Error("auth")]);
+  down.deps.maintenance = maintenance;
+  await runWhaleWatch(down.deps, { intervalMs: 60_000 });
+  assert.equal(flagged, true);
+
+  const up = harness([pass(), pass()]);
+  up.deps.maintenance = maintenance;
+  await runWhaleWatch(up.deps, { intervalMs: 60_000 });
+  assert.equal(up.sent.filter((t) => /aktif kembali/.test(t)).length, 1);
+  assert.equal(flagged, false);
 });
 
 test("repeated failures announce an outage once, then announce recovery", async () => {
