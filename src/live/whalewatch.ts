@@ -135,6 +135,8 @@ export function telegramHtml(text: string): string {
         return `<b>${line.replace(/\bHAKA\b/g, "🟢 HAKA").replace(/\bHAKI\b/g, "🔴 HAKI")}</b>`;
       }
       if (line === DISCLAIMER) return `<i>${line}</i>`;
+      // The AlfeySaham label (alfeylist.ts) stands out under the headline.
+      if (/^(📌|📋) /u.test(line)) return `<b>${line}</b>`;
       for (const sev of Object.keys(SEVERITY_ID) as Severity[]) {
         if (line === `Level: ${SEVERITY_ID[sev]}`) return `Level: ${SEVERITY_MARK[sev]} <b>${SEVERITY_ID[sev]}</b>`;
       }
@@ -171,14 +173,16 @@ export function brokerContextLines(ctx: BandarContext | null): string[] | null {
  * the bold and colour marks at the send. Falls back to the English text for a signal that carries no
  * Indonesian.
  */
-export function whaleText(signal: Signal, now: Date, context: string[] | null): string {
+export function whaleText(signal: Signal, now: Date, context: string[] | null, labelLine: string | null = null): string {
   const words = signal.id ?? { headline: signal.headline, detail: signal.detail };
   // Until a whale is confirmed on the tape, what the screener sees is an anomaly, and the message
   // says so. The states (locked at ARB, UMA) are facts rather than anomalies and keep their own words.
   const label = ANOMALY_KINDS.has(signal.kind) ? "Anomali · " : "";
+  const alfey = labelLine;
   // A detail line that already leads with its own mark (the whale layout) gets no bullet.
   const lines = [
     `${MARK[signal.kind] ?? "•"} ${label}${words.headline}`,
+    ...(alfey ? [alfey] : []),
     "",
     ...words.detail.map((d) => (/^\p{Extended_Pictographic}/u.test(d) ? d : `• ${d}`)),
   ];
@@ -234,6 +238,10 @@ export interface WhaleWatchDeps {
   stopped(): boolean;
   /** True when the error means the Stockbit session is gone and polling cannot recover. */
   isAuthError(err: unknown): boolean;
+  /** The AlfeySaham label for a stock ("Posisi Aktif AlfeySaham", "Kandidat per ..."), or null. */
+  labelFor?(symbol: string): string | null;
+  /** Bring the label list up to date before a pass. An error string goes to the log, nothing else. */
+  refreshLabels?(now: Date): Promise<string | null>;
   /**
    * Remembers, across restarts, that the group was told whale watch went into maintenance, so the
    * first good pass after the restart can say it is back. Absent means no "back" message.
@@ -325,6 +333,10 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
     summary.passes++;
     let result: PassResult;
     try {
+      if (deps.refreshLabels) {
+        const labelError = await deps.refreshLabels(now);
+        if (labelError) deps.record({ type: "labels-failed", at: now.toISOString(), error: labelError });
+      }
       result = await watcher.pass(now);
     } catch (err) {
       if (deps.isAuthError(err)) {
@@ -400,7 +412,8 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
 
     for (const signal of result.engine?.emitted ?? []) {
       const context = await contextFor(signal.symbol);
-      await send(whaleText(signal, now, context), {
+      const alfey = deps.labelFor?.(signal.symbol) ?? null;
+      await send(whaleText(signal, now, context, alfey), {
         type: "alert",
         at: now.toISOString(),
         symbol: signal.symbol,
@@ -410,12 +423,17 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
         headline: signal.headline,
         detail: signal.detail,
         brokerContext: context !== null,
+        ...(alfey ? { label: alfey } : {}),
       });
       summary.alertsSent++;
     }
 
-    for (const text of result.followUps ?? []) {
-      await send(text, { type: "whale-follow", at: now.toISOString(), text });
+    for (const { symbol, text } of result.followUps ?? []) {
+      const alfey = deps.labelFor?.(symbol) ?? null;
+      // The label goes under the follow-up's headline, as it does on a full alert.
+      const [head, ...rest] = text.split("\n");
+      const body = alfey ? [head, alfey, ...rest].join("\n") : text;
+      await send(body, { type: "whale-follow", at: now.toISOString(), symbol, text: body });
       summary.alertsSent++;
     }
 

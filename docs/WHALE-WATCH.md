@@ -193,6 +193,25 @@ lebih dari 7 menit tidak dibandingkan; bacaan baru menjadi titik awal lagi.
 - `--no-context`: jangan tambahkan ringkasan broker kemarin di bawah alert.
 - `--always`: tetap polling di luar jam bursa. Hanya untuk uji coba, karena pasar yang tutup akan
   terbaca datar.
+- `--no-alfey-labels`: matikan label AlfeySaham untuk run ini (lihat di bawah).
+
+### Label posisi aktif dan kandidat AlfeySaham
+
+Kalau `whale-watch.env` berisi `ALFEY_WATCHLIST_URL` (`https://alfeysaham.com/api/whale-watchlist`)
+dan `ALFEY_WATCHLIST_TOKEN` (sama dengan `WHALE_WATCHLIST_SECRET` di Vercel AlfeySaham), setiap alert
+dan pesan lanjutan untuk saham yang sedang jadi posisi aktif atau kandidat Alfey diberi baris tebal di
+bawah judul:
+
+- **📌 Posisi Aktif AlfeySaham**
+- **📋 Kandidat per 26 Nov 2026** (tanggal setup terbit)
+
+Daftar dibaca saat putaran pertama lalu tiap 15 menit, jadi kandidat yang terpicu entry siang hari
+ikut berubah label. Endpoint itu hanya memberi kode saham, status, dan tanggal (keputusan D-093 di
+AlfeySaham), tanpa harga entry, SL, atau TP. Kalau gagal dibaca, daftar terakhir tetap dipakai sampai
+2 jam, lalu label hilang; kegagalan hanya dicatat di log (`labels-failed`), tidak dikirim ke grup.
+Saham di daftar ini juga diprioritaskan masuk antrean 48 order book selama ia muncul di peringkat.
+Label ini membuka posisi berjalan Alfey, jadi hanya untuk grup internal. Tanpa kedua env itu, atau
+dengan `--no-alfey-labels`, tidak ada label.
 
 ### Log
 

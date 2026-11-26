@@ -319,3 +319,12 @@ test("the Telegram text escapes everything, bolds the headline, marks the level 
   assert.equal(telegramHtml("✅ Satu baris."), "✅ Satu baris.", "a one-line notice is left plain");
   assert.equal(telegramHtml("🐋 A lanjutan: beli (HAKA)\n💰 Rp 1 jt"), "<b>🐋 A lanjutan: beli (🟢 HAKA)</b>\n💰 Rp 1 jt");
 });
+
+test("a follow-up gets the AlfeySaham label under its headline, and a failed label refresh is only logged", async () => {
+  const h = harness([pass({ followUps: [{ symbol: "AIMS", text: "🐋 AIMS lanjutan: beli (HAKA)\n💰 Rp 1 jt lagi" }] })]);
+  h.deps.labelFor = (s) => (s === "AIMS" ? "📋 Kandidat per 26 Nov 2026" : null);
+  h.deps.refreshLabels = async () => "alfey list: HTTP 500";
+  await runWhaleWatch(h.deps, { intervalMs: 60_000 });
+  assert.equal(h.sent[0], "<b>🐋 AIMS lanjutan: beli (🟢 HAKA)</b>\n<b>📋 Kandidat per 26 Nov 2026</b>\n💰 Rp 1 jt lagi");
+  assert.ok(h.events.some((e) => e.type === "labels-failed"));
+});
