@@ -22,7 +22,7 @@
  * ## Why the threshold is per stock
  *
  * Rp100 juta in a thin small-cap can be the day's event; Rp1 miliar in BBCA is ordinary. So a print
- * is judged against the stock's own liquidity (a share of its 20-session average daily value) AND
+ * is judged against the stock's own liquidity (a tiered share of its 20-session average daily value) AND
  * against today's own prints (a multiple of today's average print). See `whaleThreshold`.
  *
  * Everything in this file is pure. Fetching lives in `confirm.ts`.
@@ -90,10 +90,12 @@ export function parsePrints(rows: unknown[]): Print[] {
 /* ------------------------------ thresholds ------------------------------ */
 
 export interface WhaleThresholds {
-  /** Share of the 20-session average daily value one print must reach. */
-  advShare: number;
-  /** Floor and ceiling on the ADV-based figure, rupiah. */
-  minValue: number;
+  /**
+   * Liquidity tiers, highest ADV first. A stock takes the first tier whose `minAdv` its ADV20
+   * reaches; one print must then be `share` of that ADV20 and at least `floor` rupiah.
+   */
+  tiers: readonly AdvTier[];
+  /** Ceiling on the ADV-based figure, rupiah. */
   maxValue: number;
   /** Used instead of the ADV figure when the ADV could not be read. */
   fallbackValue: number;
@@ -111,12 +113,35 @@ export interface WhaleThresholds {
   dominance: number;
 }
 
-/** Owner-approved starting points (2026-11-26). Calibrate from the log, not from intuition. */
+export interface AdvTier {
+  /** Lowest ADV20 (rupiah) in this tier. */
+  minAdv: number;
+  /** Share of ADV20 one print must reach. */
+  share: number;
+  /** Rupiah floor for this tier. */
+  floor: number;
+}
+
+/**
+ * Owner-approved tiers (2026-11-26, after the first afternoon live test sent 182 whales in two
+ * hours, half of them just over a flat Rp50 jt floor).
+ *
+ * Each tier's floor equals the top of the tier below it (1% × Rp100 M = Rp1 M, 0.5% × Rp250 M =
+ * Rp1,25 M), so a slightly more liquid stock never gets a LOWER threshold than a slightly less
+ * liquid one. Replayed on that afternoon's log: 182 whales became 48.
+ */
+export const WHALE_TIERS: readonly AdvTier[] = [
+  { minAdv: 250_000_000_000, share: 0.0025, floor: 1_250_000_000 },
+  { minAdv: 100_000_000_000, share: 0.005, floor: 1_000_000_000 },
+  { minAdv: 5_000_000_000, share: 0.01, floor: 200_000_000 },
+  { minAdv: 0, share: 0.05, floor: 100_000_000 },
+];
+
+/** Starting points. Calibrate from the log, not from intuition. */
 export const WHALE_DEFAULTS: WhaleThresholds = {
-  advShare: 0.005,
-  minValue: 50_000_000,
+  tiers: WHALE_TIERS,
   maxValue: 25_000_000_000,
-  fallbackValue: 100_000_000,
+  fallbackValue: 200_000_000,
   sessionMultiple: 10,
   sweepSeconds: 30,
   sweepMultiple: 2,
@@ -141,18 +166,31 @@ export interface Threshold {
   sessionMeanPrint: number | null;
 }
 
+/** The tier a stock with this ADV20 falls in. */
+export function tierFor(adv20: number, t: WhaleThresholds = WHALE_DEFAULTS): AdvTier {
+  return t.tiers.find((tier) => adv20 >= tier.minAdv) ?? t.tiers[t.tiers.length - 1];
+}
+
+/** The smallest rupiah any stock's threshold can be: nothing under it can be a whale print. */
+export function lowestFloor(t: WhaleThresholds = WHALE_DEFAULTS): number {
+  return Math.min(t.fallbackValue, ...t.tiers.map((tier) => tier.floor));
+}
+
 /**
  * The rupiah one print must reach in THIS stock.
  *
- * Both measures must be met, so the threshold is the larger: `advShare` of the stock's average daily
- * value (clamped to `minValue`..`maxValue`) — "large for this stock in general" — and
+ * Both measures must be met, so the threshold is the larger: the stock's tier share of its average
+ * daily value (at least the tier floor, at most `maxValue`) — "large for this stock in general" — and
  * `sessionMultiple` × today's average print — "unusual for today". Without an ADV the fallback floor
  * stands in for the first measure.
  */
 export function whaleThreshold(input: ThresholdInput, t: WhaleThresholds = WHALE_DEFAULTS): Threshold {
   const advPart =
     input.adv20 !== null && input.adv20 > 0
-      ? Math.min(t.maxValue, Math.max(t.minValue, input.adv20 * t.advShare))
+      ? (() => {
+          const tier = tierFor(input.adv20, t);
+          return Math.min(t.maxValue, Math.max(tier.floor, input.adv20 * tier.share));
+        })()
       : null;
   const first = advPart ?? t.fallbackValue;
   const sessionPart =
@@ -297,7 +335,12 @@ function relativeId(value: number, th: Threshold): string {
  * the market-wide sweep). The text claims only what the tape shows: the aggressor side, the size,
  * the time. Never who.
  */
-export function whaleSignal(f: WhaleFinding, triggers: string[], source: "confirm" | "sweep"): Signal {
+export function whaleSignal(
+  f: WhaleFinding,
+  triggers: string[],
+  source: "confirm" | "sweep",
+  t: WhaleThresholds = WHALE_DEFAULTS,
+): Signal {
   const dir = f.direction;
   const headlineId =
     dir === "two-way"
@@ -310,7 +353,16 @@ export function whaleSignal(f: WhaleFinding, triggers: string[], source: "confir
     detailId.push(
       `${clock(p.time)} · ${numId(p.lots)} lot di ${numId(p.price)} · ${rupiahId(p.value)} dalam 1 transaksi (${AGGRESSOR_ID[p.side]})${rel ? `, ${rel}` : ""}.`,
     );
-    if (f.bigPrints.length > 1) detailId.push(`Ada ${numId(f.bigPrints.length)} transaksi tunggal di atas ambang dalam jendela ini.`);
+    // Not earlier alerts: the other prints over the threshold in the same stretch of tape that was read.
+    if (f.bigPrints.length > 1) {
+      const times = f.bigPrints.map((b) => b.seconds);
+      const first = f.bigPrints[times.indexOf(Math.min(...times))].time;
+      const last = f.bigPrints[times.indexOf(Math.max(...times))].time;
+      const sum = f.bigPrints.reduce((a, b) => a + b.value, 0);
+      detailId.push(
+        `Selain itu ada ${numId(f.bigPrints.length - 1)} transaksi lain yang juga di atas ambang, antara ${clock(first)} dan ${clock(last)}. Totalnya ${numId(f.bigPrints.length)} transaksi besar senilai ${rupiahId(sum)}.`,
+      );
+    }
   }
   if (f.sweep) {
     const s = f.sweep;
@@ -322,7 +374,7 @@ export function whaleSignal(f: WhaleFinding, triggers: string[], source: "confir
   const total = f.buyValue + f.sellValue;
   if (total > 0) {
     detailId.push(
-      `Transaksi besar di jendela ini: beli ${rupiahId(f.buyValue)}, jual ${rupiahId(f.sellValue)} (${numId(f.share * 100, 0)}% ${SIDE_ID[f.buyValue >= f.sellValue ? "buy" : "sell"]}).`,
+      `Semua transaksi minimal ${rupiahId(f.threshold.value * t.fillShare)} di rentang waktu itu: beli ${rupiahId(f.buyValue)}, jual ${rupiahId(f.sellValue)}, jadi ${numId(f.share * 100, 0)}% ${SIDE_ID[f.buyValue >= f.sellValue ? "buy" : "sell"]}.`,
     );
   }
   detailId.push(

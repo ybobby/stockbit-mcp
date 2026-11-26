@@ -18,6 +18,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   runWhaleWatch,
+  telegramHtml,
   whaleText,
   brokerContextLines,
   elapsedTradingSeconds,
@@ -122,7 +123,7 @@ test("an emitted signal reaches Telegram once, with its headline and the WIB tim
   // Unconfirmed on the tape, a value surge is an anomaly and says so; 🐋 is kept for confirmed whales.
   assert.match(h.sent[0], /^📈 Anomali · TEST: transaksi besar masuk/);
   assert.match(h.sent[0], /Rp 2,10 M berpindah tangan/);
-  assert.match(h.sent[0], /Tingkat: Penting · 10:01:00 WIB/);
+  assert.match(h.sent[0], /Tingkat: 🟧 <b>Penting<\/b> · 10:01:00 WIB/);
   assert.match(h.sent[0], /Bukan rekomendasi beli atau jual/);
   assert.doesNotMatch(h.sent[0], /bn in 60s/, "the Indonesian text replaces the English, it is not appended");
   const alert = h.events.find((e) => e.type === "alert");
@@ -289,4 +290,13 @@ test("the clock helpers speak WIB", () => {
   assert.equal(wibClock(OPEN), "10:00:00");
   assert.equal(elapsedTradingSeconds(OPEN), 3600);
   assert.equal(elapsedTradingSeconds(new Date("2026-11-25T01:00:00Z")), 60, "before the open floors at a minute");
+});
+
+test("the Telegram text escapes everything, then marks the level and HAKA/HAKI in colour and bold", () => {
+  const html = telegramHtml("X <b>&: order beli besar (HAKA)\n• jual (HAKI)\n\nTingkat: Sangat penting · 10:01:00 WIB");
+  assert.match(html, /X &lt;b&gt;&amp;:/, "nothing in the text can open a tag");
+  assert.match(html, /\(🟢 <b>HAKA<\/b>\)/);
+  assert.match(html, /\(🔴 <b>HAKI<\/b>\)/);
+  assert.match(html, /Tingkat: 🟥 <b>Sangat penting<\/b> ·/);
+  assert.match(telegramHtml("Tingkat: Pantau · 1"), /🟨 <b>Pantau<\/b>/);
 });

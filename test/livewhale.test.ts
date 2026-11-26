@@ -147,22 +147,40 @@ test("prints keep the regular board and a known aggressor, and read separators a
 
 /* ------------------------------- thresholds ------------------------------- */
 
-test("the threshold scales with each stock's own liquidity", () => {
+test("the threshold scales with each stock's own liquidity, by tier", () => {
   // Rp1 M in BBCA is not a whale; Rp100 jt in a thin small-cap can be.
-  const bbca = whaleThreshold({ adv20: 1_000_000_000_000, sessionMeanPrint: null });
-  assert.equal(bbca.value, 5_000_000_000);
-  assert.equal(bbca.basis, "adv");
-  const small = whaleThreshold({ adv20: 10_000_000_000, sessionMeanPrint: null });
-  assert.equal(small.value, 50_000_000);
-  const tiny = whaleThreshold({ adv20: 1_000_000_000, sessionMeanPrint: null });
-  assert.equal(tiny.value, WHALE_DEFAULTS.minValue, "floored");
+  const cases: [number, number][] = [
+    [1_000_000_000_000, 2_500_000_000], // > Rp250 M: 0.25%
+    [300_000_000_000, 1_250_000_000], // > Rp250 M, under the tier floor
+    [200_000_000_000, 1_000_000_000], // Rp100-250 M: 0.5%
+    [120_000_000_000, 1_000_000_000], // Rp100-250 M, floored at Rp1 M
+    [60_000_000_000, 600_000_000], // Rp5-100 M: 1%
+    [10_000_000_000, 200_000_000], // Rp5-100 M, floored at Rp200 jt
+    [4_000_000_000, 200_000_000], // < Rp5 M: 5%
+    [1_000_000_000, 100_000_000], // < Rp5 M, floored at Rp100 jt
+  ];
+  for (const [adv20, want] of cases) {
+    const th = whaleThreshold({ adv20, sessionMeanPrint: null });
+    assert.equal(th.value, want, `ADV ${adv20}`);
+    assert.equal(th.basis, "adv");
+  }
   const giant = whaleThreshold({ adv20: 50_000_000_000_000, sessionMeanPrint: null });
   assert.equal(giant.value, WHALE_DEFAULTS.maxValue, "capped");
 });
 
+test("a slightly more liquid stock never gets a lower threshold at the Rp100 M and Rp250 M edges", () => {
+  // The Rp5 M edge is the owner's choice and does step down, from 5% of just under Rp5 M (~Rp250 jt)
+  // to the Rp200 jt floor of the tier above.
+  for (const edge of [100_000_000_000, 250_000_000_000]) {
+    const below = whaleThreshold({ adv20: edge - 1, sessionMeanPrint: null }).value;
+    const at = whaleThreshold({ adv20: edge, sessionMeanPrint: null }).value;
+    assert.ok(at >= below - 1, `edge ${edge}: ${below} then ${at}`);
+  }
+});
+
 test("an unusually busy day raises the bar through today's own average print", () => {
-  const th = whaleThreshold({ adv20: 10_000_000_000, sessionMeanPrint: 20_000_000 });
-  assert.equal(th.value, 200_000_000);
+  const th = whaleThreshold({ adv20: 10_000_000_000, sessionMeanPrint: 30_000_000 });
+  assert.equal(th.value, 300_000_000);
   assert.equal(th.basis, "session");
 });
 
@@ -179,27 +197,27 @@ test("the tape is asked only for prints worth a tenth of the threshold", () => {
 
 /* ------------------------------- judging ------------------------------- */
 
-const th50 = whaleThreshold({ adv20: 10_000_000_000, sessionMeanPrint: null }); // Rp50 jt
+const th50 = whaleThreshold({ adv20: 1_000_000_000, sessionMeanPrint: null }); // Rp100 jt (small-cap tier floor)
 
 test("one print over the stock's threshold is a whale, with the aggressor named", () => {
-  const f = judgePrints("KECL", [print({ value: 120_000_000, lots: 12_000, side: "buy" }), print({ value: 6_000_000, side: "sell" })], th50);
+  const f = judgePrints("KECL", [print({ value: 250_000_000, lots: 25_000, side: "buy" }), print({ value: 6_000_000, side: "sell" })], th50);
   assert.ok(f);
-  assert.equal(f.largest?.value, 120_000_000);
+  assert.equal(f.largest?.value, 250_000_000);
   assert.equal(f.direction, "buy");
   assert.ok(f.surprise >= 2);
 });
 
 test("a burst of same-side prints across price levels is a sweep even with no single big print", () => {
-  const ps = [0, 5, 10, 20].map((dt, i) => print({ seconds: 36_000 + dt, time: `10:00:${String(dt).padStart(2, "0")}`, value: 30_000_000, price: 100 + i, side: "buy" }));
+  const ps = [0, 5, 10, 20].map((dt, i) => print({ seconds: 36_000 + dt, time: `10:00:${String(dt).padStart(2, "0")}`, value: 60_000_000, price: 100 + i, side: "buy" }));
   const f = judgePrints("KECL", ps, th50);
   assert.ok(f);
   assert.equal(f.largest, null);
-  assert.equal(f.sweep?.value, 120_000_000);
+  assert.equal(f.sweep?.value, 240_000_000);
   assert.equal(f.sweep?.levels, 4);
 });
 
 test("the same burst spread over minutes is not a sweep", () => {
-  const ps = [0, 60, 120, 180].map((dt, i) => print({ seconds: 36_000 + dt, value: 30_000_000, price: 100 + i, side: "buy" }));
+  const ps = [0, 60, 120, 180].map((dt, i) => print({ seconds: 36_000 + dt, value: 60_000_000, price: 100 + i, side: "buy" }));
   assert.equal(judgePrints("KECL", ps, th50), null);
 });
 
@@ -209,18 +227,30 @@ test("balanced large buying and selling is two-way, not HAKA or HAKI", () => {
   assert.match(whaleSignal(f, [], "sweep").id!.headline, /transaksi besar dua arah/);
 });
 
+test("several prints over the threshold are told as the others in the same stretch, not as earlier alerts", () => {
+  const ps = [
+    print({ seconds: 36_000, time: "10:00:00", value: 300_000_000, side: "buy" }),
+    print({ seconds: 36_020, time: "10:00:20", value: 150_000_000, side: "buy" }),
+    print({ seconds: 36_040, time: "10:00:40", value: 120_000_000, side: "buy" }),
+  ];
+  const text = whaleSignal(judgePrints("KECL", ps, th50)!, [], "sweep").id!.detail.join("\n");
+  assert.match(text, /Selain itu ada 2 transaksi lain yang juga di atas ambang, antara 10\.00\.00 dan 10\.00\.40\. Totalnya 3 transaksi besar senilai Rp 570 jt\./);
+  assert.doesNotMatch(text, /transaksi tunggal|jendela ini/);
+});
+
 test("a print under the stock's threshold is nothing", () => {
   assert.equal(judgePrints("KECL", [print({ value: 40_000_000 })], th50), null);
 });
 
 test("the whale message gives size relative to the stock, the trigger, and no claim about who", () => {
-  const th = whaleThreshold({ adv20: 10_000_000_000, sessionMeanPrint: 2_000_000 });
+  const th = whaleThreshold({ adv20: 1_000_000_000, sessionMeanPrint: 2_000_000 });
   const f = judgePrints("KECL", [print({ time: "13:41:25", value: 150_000_000, lots: 15_000, price: 100, side: "buy" })], th)!;
   const s = whaleSignal(f, ["KECL: tembok antrean beli (bid) muncul di harga 99"], "confirm");
   assert.equal(s.kind, "whale");
   assert.equal(s.id!.headline, "KECL: order beli besar (HAKA)");
   const text = s.id!.detail.join("\n");
-  assert.match(text, /13\.41\.25 · 15\.000 lot di 100 · Rp 150 jt dalam 1 transaksi \(HAKA\), 1,5% dari rata-rata nilai harian saham ini, 75x rata-rata transaksinya hari ini/);
+  assert.match(text, /13\.41\.25 · 15\.000 lot di 100 · Rp 150 jt dalam 1 transaksi \(HAKA\), 15,0% dari rata-rata nilai harian saham ini, 75x rata-rata transaksinya hari ini/);
+  assert.match(text, /Semua transaksi minimal Rp 10 jt di rentang waktu itu: beli Rp 150 jt, jual Rp 0, jadi 100% beli\./);
   assert.match(text, /Pemicu: KECL: tembok antrean beli/);
   assert.doesNotMatch(text, /broker|bandar|pelaku/i);
   assert.match(followUpText(f, 3), /^🐋 KECL lanjutan: transaksi besar Rp 150 jt lagi dalam 3 menit terakhir, beli \(HAKA\), harga 100\.$/);
@@ -252,17 +282,17 @@ test("a busy tape is paged backwards by trade number until the last print alread
 /* ------------------------------- the stage ------------------------------- */
 
 test("a flagged stock with a big print is confirmed and gets a watch slot; later prints become a follow-up", async () => {
-  const c = new WhaleConfirmer(new FixedAdv({ KECL: 10_000_000_000 }), WHALE_DEFAULTS, CONFIRM_LIMITS, false);
+  const c = new WhaleConfirmer(new FixedAdv({ KECL: 1_000_000_000 }), WHALE_DEFAULTS, CONFIRM_LIMITS, false);
   const t0 = new Date("2026-11-26T06:41:30Z"); // 13:41:30 WIB
   tape = { KECL: [row("KECL", "13:41:25", 100, 12_000, "buy")] };
   const r1 = await c.run([{ symbol: "KECL", price: 100, sessionMeanPrint: null, windowSeconds: 60, strength: 2 }], t0);
   assert.equal(r1.confirmed.get("KECL")?.direction, "buy");
   assert.deepEqual(r1.slots, ["KECL"]);
 
-  tape = { KECL: [row("KECL", "13:43:10", 101, 9_000, "buy"), ...tape.KECL] };
+  tape = { KECL: [row("KECL", "13:43:10", 101, 11_000, "buy"), ...tape.KECL] };
   const r2 = await c.run([], new Date(t0.getTime() + 2 * 60_000));
   assert.equal(r2.followUps.length, 1);
-  assert.equal(r2.followUps[0].finding.largest?.lots, 9_000);
+  assert.equal(r2.followUps[0].finding.largest?.lots, 11_000);
 
   const r3 = await c.run([], new Date(t0.getTime() + 3 * 60_000));
   assert.equal(r3.followUps.length, 0, "nothing new, nothing sent");
@@ -271,12 +301,12 @@ test("a flagged stock with a big print is confirmed and gets a watch slot; later
 });
 
 test("the market-wide sweep finds a whale in a stock nobody flagged, judged by that stock's ADV", async () => {
-  const adv = new FixedAdv({ BESR: 2_000_000_000_000, KECL: 10_000_000_000 });
+  const adv = new FixedAdv({ BESR: 2_000_000_000_000, KECL: 1_000_000_000 });
   const c = new WhaleConfirmer(adv, WHALE_DEFAULTS, CONFIRM_LIMITS, true);
   tape = {
     "": [
-      row("KECL", "13:41:20", 100, 15_000, "sell"), // Rp150 jt in a Rp10 M/day stock: a whale
-      row("BESR", "13:41:21", 5_000, 3_000, "buy"), // Rp1,5 M in a Rp2 T/day stock: not
+      row("KECL", "13:41:20", 100, 15_000, "sell"), // Rp150 jt in a Rp1 M/day stock: a whale
+      row("BESR", "13:41:21", 5_000, 3_000, "buy"), // Rp1,5 M in a Rp2 T/day stock (threshold Rp5 M): not
     ],
   };
   const r = await c.run([], new Date("2026-11-26T06:41:30Z"));
@@ -286,7 +316,7 @@ test("the market-wide sweep finds a whale in a stock nobody flagged, judged by t
 });
 
 test("more flagged stocks than the limit: the strongest are confirmed", async () => {
-  const fixed = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`S${i}`, 10_000_000_000]));
+  const fixed = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`S${i}`, 1_000_000_000]));
   const c = new WhaleConfirmer(new FixedAdv(fixed), WHALE_DEFAULTS, CONFIRM_LIMITS, false);
   const flagged = Array.from({ length: 8 }, (_, i) => ({ symbol: `S${i}`, price: 100, sessionMeanPrint: null, windowSeconds: 60, strength: i }));
   await c.run(flagged, new Date("2026-11-26T06:41:30Z"));
@@ -300,7 +330,7 @@ const lvl = (price: number, volume: number) => ({ price: String(price), volume: 
 const ALL = { scope: { kind: "all" }, symbols: null } as unknown as ResolvedScope;
 
 test("a confirmed whale replaces the anomaly that flagged it, and names it as the trigger", async () => {
-  const c = new WhaleConfirmer(new FixedAdv({ KECL: 10_000_000_000 }), WHALE_DEFAULTS, CONFIRM_LIMITS, false);
+  const c = new WhaleConfirmer(new FixedAdv({ KECL: 1_000_000_000 }), WHALE_DEFAULTS, CONFIRM_LIMITS, false);
   const w = new SignalWatcher({ scope: ALL, spec: compilePrompt(""), elapsedSeconds: () => 3 * 3600, uncapped: true, whale: c });
   // Ten symbols, so one stock firing is not read as the whole market moving (the engine's
   // market-wide rule collapses a signal tripped by more than 40% of the universe).

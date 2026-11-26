@@ -22,6 +22,11 @@ bukan sinyal beli atau jual.
 Sinyal 📈 📚 🧱 📏 🌅 adalah **anomali** dan pesannya diawali "Anomali ·". Kalau anomali di satu saham
 lolos konfirmasi, yang dikirim cukup satu pesan 🐋 yang menyebut anomali itu sebagai pemicunya.
 
+Telegram tidak bisa mewarnai teks, jadi warna dipasang lewat tanda di depan kata yang ditebalkan:
+tingkat ⬜ **Info**, 🟨 **Pantau**, 🟧 **Penting**, 🟥 **Sangat penting**, serta 🟢 **HAKA** dan
+🔴 **HAKI**. Pesan dikirim sebagai HTML Telegram. Kalau Telegram menolak markup-nya, pesan yang sama
+dikirim ulang sebagai teks polos.
+
 Yang **tidak bisa** dilakukan: menyebut siapa pembelinya. IDX menutup kode broker di running trade
 sejak 6 Desember 2021. Blok "Broker context" di bawah alert adalah ringkasan broker **sesi
 sebelumnya** (akhir hari), dan diberi label dengan tanggalnya. Itu konteks, bukan pengamatan live.
@@ -80,7 +85,7 @@ $env:STOCKBIT_TELEGRAM_CHAT_ID = "123456789"
 node dist/bin/stockbit-live.js watch all 1m
 ```
 
-Biarkan berjalan. Di luar jam bursa (08:45 sampai 16:15 WIB, Senin sampai Jumat) watcher hanya
+Biarkan berjalan. Di luar jam pantau (08:45 sampai sebelum 16:00 WIB, Senin sampai Jumat) watcher hanya
 menunggu, lalu otomatis mulai lagi besok pagi dengan baseline dan kuota alert yang baru. Tekan
 Ctrl-C untuk berhenti. Catatan: jam bursa ini tidak tahu hari libur IDX.
 
@@ -124,9 +129,23 @@ Aktif bawaan di `watch` (matikan dengan `--no-whale`). Setiap menit:
 Ambangnya **per saham**, karena Rp100 juta di saham kecil bisa sudah besar sementara Rp1 miliar di
 BBCA belum. Satu transaksi disebut whale kalau melewati dua ukuran sekaligus:
 
-- minimal **0,5% dari rata-rata nilai transaksi harian 20 hari terakhir** saham itu, dengan batas
-  bawah Rp50 juta dan batas atas Rp25 miliar (tanpa data harian: Rp100 juta);
+- minimal **sekian persen dari rata-rata nilai transaksi harian 20 hari terakhir (ADV20)** saham itu,
+  menurut tier di bawah, dengan batas atas Rp25 miliar (tanpa data harian: Rp200 juta);
 - minimal **10x rata-rata nilai per transaksi saham itu hari ini**.
+
+| ADV20 | Ambang | Paling kecil |
+| --- | --- | --- |
+| di atas Rp250 M | 0,25% × ADV20 | Rp1,25 M |
+| Rp100 sampai 250 M | 0,5% × ADV20 | Rp1 M |
+| Rp5 sampai 100 M | 1% × ADV20 | Rp200 juta |
+| di bawah Rp5 M | 5% × ADV20 | Rp100 juta |
+
+Batas paling kecil tiap tier sama dengan puncak tier di bawahnya. Dengan begitu saham yang sedikit
+lebih ramai tidak pernah mendapat ambang yang lebih ringan di batas Rp100 M dan Rp250 M. Di batas
+Rp5 M ambangnya memang turun sedikit (dari sekitar Rp250 juta ke Rp200 juta), sesuai pilihan owner.
+Diputar ulang pada log uji live sore 26 Nov, tier ini mengubah 182 whale menjadi 48.
+
+Pesan lanjutan tidak dibatasi jumlahnya. Ambang tier di atas sudah menjadi saringannya.
 
 Sapuan dihitung kalau transaksi satu sisi dalam 30 detik totalnya minimal 2x ambang dan memakan minimal
 2 level harga. Arah disebut HAKA/HAKI kalau satu sisi memegang minimal 70% nilai transaksi besar;

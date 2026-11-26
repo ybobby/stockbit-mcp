@@ -109,6 +109,16 @@ test("it posts to the Bot API with the token in the path and the chat id in the 
   assert.ok(!("parse_mode" in body), "plain text: an alert name with a stray * must not break the send");
 });
 
+test("HTML is sent only when the caller asks for it", async () => {
+  let body: Record<string, unknown> = {};
+  const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+  assert.equal(await postTelegram(TARGET, "<b>x</b>", fetchImpl, 8000, "HTML"), null);
+  assert.equal(body.parse_mode, "HTML");
+});
+
 test("a non-2xx status is reported by code, without the body", async () => {
   // Telegram echoes parts of the request in `description`, which is exactly what must not be logged.
   const fetchImpl = (async () =>

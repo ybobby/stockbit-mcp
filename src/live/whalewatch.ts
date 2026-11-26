@@ -105,6 +105,30 @@ function tanggal(iso: string): string {
   return `${Number(m[3])} ${bulan ?? m[2]} ${m[1]}`;
 }
 
+/** A square of a different colour per level. Telegram cannot colour text, so the colour is a mark. */
+const SEVERITY_MARK: Record<Severity, string> = {
+  info: "⬜",
+  watch: "🟨",
+  alert: "🟧",
+  critical: "🟥",
+};
+
+/**
+ * A plain message as Telegram HTML: everything escaped, then the few words the owner asked to stand
+ * out made bold with a coloured mark — the level after "Tingkat:", HAKA green, HAKI red.
+ *
+ * Done once, at the send, so every composer above keeps writing plain text and nothing it carries
+ * (a symbol, a headline, an error message) can open a tag. `parse_mode: "HTML"` only needs `&`, `<`
+ * and `>` escaped.
+ */
+export function telegramHtml(text: string): string {
+  let html = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  for (const sev of Object.keys(SEVERITY_ID) as Severity[]) {
+    html = html.replace(`Tingkat: ${SEVERITY_ID[sev]} ·`, `Tingkat: ${SEVERITY_MARK[sev]} <b>${SEVERITY_ID[sev]}</b> ·`);
+  }
+  return html.replace(/\bHAKA\b/g, "🟢 <b>HAKA</b>").replace(/\bHAKI\b/g, "🔴 <b>HAKI</b>");
+}
+
 /**
  * The previous session's broker summary, in a few plain Indonesian lines.
  *
@@ -129,9 +153,9 @@ export function brokerContextLines(ctx: BandarContext | null): string[] | null {
 }
 
 /**
- * One alert as a Telegram message, in plain Indonesian. Plain text — `postTelegram` sends no
- * `parse_mode`, so nothing in a headline can make Telegram reject the message. Falls back to the
- * English text for a signal that carries no Indonesian.
+ * One alert as a message, in plain Indonesian. Plain text here; `telegramHtml` escapes it and adds
+ * the bold and colour marks at the send. Falls back to the English text for a signal that carries no
+ * Indonesian.
  */
 export function whaleText(signal: Signal, now: Date, context: string[] | null): string {
   const words = signal.id ?? { headline: signal.headline, detail: signal.detail };
@@ -180,7 +204,7 @@ export interface WhaleWatchDeps {
    * told the watcher could not see the market a quarter of an hour before the market opened.
    */
   failureCounts?(now: Date): boolean;
-  /** Send one message. Resolves to an error string, or null when delivered. */
+  /** Send one message, already Telegram HTML (see `telegramHtml`). An error string, or null when delivered. */
   send(text: string): Promise<string | null>;
   /** Yesterday's broker context for a symbol, or null. May throw; a failure costs only the block. */
   brokerContext?(symbol: string): Promise<string[] | null>;
@@ -229,7 +253,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
   const contextCache = new Map<string, string[] | null>();
 
   const send = async (text: string, event: Record<string, unknown>): Promise<void> => {
-    const error = await deps.send(text);
+    const error = await deps.send(telegramHtml(text));
     if (error) summary.sendFailures++;
     deps.record({ ...event, delivered: error ? "failed" : "sent", ...(error ? { deliveryError: error } : {}) });
   };

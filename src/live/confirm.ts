@@ -28,6 +28,7 @@ import {
   judgePrints,
   minimumLotFor,
   parsePrints,
+  lowestFloor,
   whaleThreshold,
   WHALE_DEFAULTS,
   type Print,
@@ -344,13 +345,13 @@ export class WhaleConfirmer {
         // A cheap pre-filter before any ADV is spent: nothing under the absolute floor can qualify.
         const bySymbol = new Map<string, Print[]>();
         for (const p of read.prints) {
-          if (p.value < this.t.minValue * this.t.fillShare) continue;
+          if (p.value < lowestFloor(this.t) * this.t.fillShare) continue;
           if (result.confirmed.has(p.symbol) || this.slots.has(p.symbol)) continue;
           (bySymbol.get(p.symbol) ?? bySymbol.set(p.symbol, []).get(p.symbol)!).push(p);
         }
         const ranked = [...bySymbol.entries()].sort((a, b) => Math.max(...b[1].map((p) => p.value)) - Math.max(...a[1].map((p) => p.value)));
         for (const [symbol, prints] of ranked) {
-          if (Math.max(...prints.map((p) => p.value)) < this.t.minValue) continue;
+          if (Math.max(...prints.map((p) => p.value)) < lowestFloor(this.t)) continue;
           const th = await this.thresholdFor(symbol, null, budget, now);
           if (!th) continue; // ADV budget spent this pass; a later print will bring it back
           const finding = judgePrints(symbol, prints, th, this.t);

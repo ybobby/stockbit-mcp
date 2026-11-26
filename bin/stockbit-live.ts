@@ -30,7 +30,7 @@
  *
  * **It never places, cancels or modifies an order.** It reads one public market endpoint.
  */
-import { sessionClock, isWithinPollingWindow } from "../src/core/sessionclock.js";
+import { sessionClock, isWithinPollingWindow, isWithinWhaleWindow } from "../src/core/sessionclock.js";
 import { CliParseError, formatUsage, gateCommandLine, isHelpToken, isVersionToken } from "../src/cliargs.js";
 import { VERSION } from "../src/version.js";
 import { LIVE_BIN, LIVE_COMMANDS, LIVE_EPILOGUE } from "../src/live/cli.js";
@@ -395,14 +395,19 @@ async function watch(): Promise<void> {
         new SignalWatcher({ scope: resolved, spec, elapsedSeconds: () => elapsedTradingSeconds(new Date()), wide: flag("wide"), uncapped: true, whale: !flag("no-whale") }),
       now: () => new Date(),
       sleep: nap,
-      inWindow: (now) => flag("always") || isWithinPollingWindow(now),
+      inWindow: (now) => flag("always") || isWithinWhaleWindow(now),
       failureCounts: (now) => flag("always") || sessionClock(now).isTradingHours,
       send: async (text) => {
         if (dryRun || !telegram) {
           process.stderr.write(`\n${text}\n\n`);
           return null;
         }
-        return postTelegram(telegram, text);
+        const error = await postTelegram(telegram, text, fetch, 8000, "HTML");
+        // A 400 is Telegram refusing the markup. The message still matters more than its bold, so
+        // it goes again as plain text with the tags taken out.
+        if (error !== "HTTP 400") return error;
+        const plain = text.replace(/<\/?b>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+        return postTelegram(telegram, plain);
       },
       brokerContext: flag("no-context")
         ? undefined
