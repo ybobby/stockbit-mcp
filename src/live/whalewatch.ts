@@ -105,6 +105,8 @@ function tanggal(iso: string): string {
   return `${Number(m[3])} ${bulan ?? m[2]} ${m[1]}`;
 }
 
+const DISCLAIMER = "Bukan rekomendasi beli atau jual.";
+
 /** A square of a different colour per level. Telegram cannot colour text, so the colour is a mark. */
 const SEVERITY_MARK: Record<Severity, string> = {
   info: "⬜",
@@ -122,11 +124,25 @@ const SEVERITY_MARK: Record<Severity, string> = {
  * and `>` escaped.
  */
 export function telegramHtml(text: string): string {
-  let html = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  for (const sev of Object.keys(SEVERITY_ID) as Severity[]) {
-    html = html.replace(`Tingkat: ${SEVERITY_ID[sev]} ·`, `Tingkat: ${SEVERITY_MARK[sev]} <b>${SEVERITY_ID[sev]}</b> ·`);
-  }
-  return html.replace(/\bHAKA\b/g, "🟢 <b>HAKA</b>").replace(/\bHAKI\b/g, "🔴 <b>HAKI</b>");
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const lines = escaped.split("\n");
+  // A full alert (several lines) gets its headline in bold; one-line notices stay as they are.
+  const boldHeadline = lines.length >= 3;
+  return lines
+    .map((line, i) => {
+      if (i === 0 && boldHeadline) {
+        // Already inside <b>, so the aggressor gets its mark but no second tag.
+        return `<b>${line.replace(/\bHAKA\b/g, "🟢 HAKA").replace(/\bHAKI\b/g, "🔴 HAKI")}</b>`;
+      }
+      if (line === DISCLAIMER) return `<i>${line}</i>`;
+      for (const sev of Object.keys(SEVERITY_ID) as Severity[]) {
+        if (line.startsWith(`Tingkat: ${SEVERITY_ID[sev]} ·`)) {
+          return line.replace(`Tingkat: ${SEVERITY_ID[sev]} ·`, `${SEVERITY_MARK[sev]} <b>${SEVERITY_ID[sev]}</b> ·`);
+        }
+      }
+      return line.replace(/\bHAKA\b/g, "🟢 <b>HAKA</b>").replace(/\bHAKI\b/g, "🔴 <b>HAKI</b>");
+    })
+    .join("\n");
 }
 
 /**
@@ -162,9 +178,14 @@ export function whaleText(signal: Signal, now: Date, context: string[] | null): 
   // Until a whale is confirmed on the tape, what the screener sees is an anomaly, and the message
   // says so. The states (locked at ARB, UMA) are facts rather than anomalies and keep their own words.
   const label = ANOMALY_KINDS.has(signal.kind) ? "Anomali · " : "";
-  const lines = [`${MARK[signal.kind] ?? "•"} ${label}${words.headline}`, ...words.detail.map((d) => `• ${d}`)];
+  // A detail line that already leads with its own mark (the whale layout) gets no bullet.
+  const lines = [
+    `${MARK[signal.kind] ?? "•"} ${label}${words.headline}`,
+    "",
+    ...words.detail.map((d) => (/^\p{Extended_Pictographic}/u.test(d) ? d : `• ${d}`)),
+  ];
   if (context?.length) lines.push("", ...context);
-  lines.push("", `Tingkat: ${SEVERITY_ID[signal.severity]} · ${wibClock(now)} WIB`, "Bukan rekomendasi beli atau jual.");
+  lines.push("", `Tingkat: ${SEVERITY_ID[signal.severity]} · ${wibClock(now)} WIB`, DISCLAIMER);
   return lines.join("\n");
 }
 

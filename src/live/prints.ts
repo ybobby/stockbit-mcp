@@ -323,8 +323,8 @@ const severityOf = (surprise: number): Severity => (surprise >= 5 ? "critical" :
 /** How big a print is next to this stock's own yardsticks, in one Indonesian clause. */
 function relativeId(value: number, th: Threshold): string {
   const parts: string[] = [];
-  if (th.adv20) parts.push(`${numId((value / th.adv20) * 100, 1)}% dari rata-rata nilai harian saham ini`);
-  if (th.sessionMeanPrint) parts.push(`${numId(value / th.sessionMeanPrint, 0)}x rata-rata transaksinya hari ini`);
+  if (th.adv20) parts.push(`${numId((value / th.adv20) * 100, 1)}% nilai harian rata-rata`);
+  if (th.sessionMeanPrint) parts.push(`${numId(value / th.sessionMeanPrint, 0)}x transaksi rata-rata hari ini`);
   return parts.join(", ");
 }
 
@@ -346,42 +346,41 @@ export function whaleSignal(
     dir === "two-way"
       ? `${f.symbol}: transaksi besar dua arah`
       : `${f.symbol}: order ${SIDE_ID[dir]} besar (${AGGRESSOR_ID[dir]})`;
+  // Laid out for a phone (owner, 2026-11-26: the first version read as one dense block). One fact per
+  // line, each led by its own mark so the eye can skip to it; whaleText adds no bullet to these.
   const detailId: string[] = [];
   if (f.largest) {
     const p = f.largest;
+    detailId.push(`💰 ${rupiahId(p.value)} sekali transaksi, ${numId(p.lots)} lot di ${numId(p.price)} (${clock(p.time)})`);
     const rel = relativeId(p.value, f.threshold);
-    detailId.push(
-      `${clock(p.time)} · ${numId(p.lots)} lot di ${numId(p.price)} · ${rupiahId(p.value)} dalam 1 transaksi (${AGGRESSOR_ID[p.side]})${rel ? `, ${rel}` : ""}.`,
-    );
+    if (rel) detailId.push(`📊 Setara ${rel}`);
     // Not earlier alerts: the other prints over the threshold in the same stretch of tape that was read.
     if (f.bigPrints.length > 1) {
       const times = f.bigPrints.map((b) => b.seconds);
       const first = f.bigPrints[times.indexOf(Math.min(...times))].time;
       const last = f.bigPrints[times.indexOf(Math.max(...times))].time;
-      const sum = f.bigPrints.reduce((a, b) => a + b.value, 0);
-      detailId.push(
-        `Selain itu ada ${numId(f.bigPrints.length - 1)} transaksi lain yang juga di atas ambang, antara ${clock(first)} dan ${clock(last)}. Totalnya ${numId(f.bigPrints.length)} transaksi besar senilai ${rupiahId(sum)}.`,
-      );
+      const sum = f.bigPrints.reduce((acc, b) => acc + b.value, 0);
+      detailId.push(`🔁 Total ${numId(f.bigPrints.length)} transaksi di atas ambang, ${rupiahId(sum)} (${clock(first)} sampai ${clock(last)})`);
     }
   }
   if (f.sweep) {
-    const s = f.sweep;
-    const range = s.lowPrice === s.highPrice ? `di ${numId(s.lowPrice)}` : `${numId(s.lowPrice)} sampai ${numId(s.highPrice)}`;
-    detailId.push(
-      `Sapuan ${SIDE_ID[s.side]} ${clock(s.from)} sampai ${clock(s.to)}: ${rupiahId(s.value)} lewat ${numId(s.prints)} transaksi, ${numId(s.levels)} level harga (${range}).`,
-    );
+    const sw = f.sweep;
+    const range = sw.lowPrice === sw.highPrice ? `di ${numId(sw.lowPrice)}` : `${numId(sw.lowPrice)} sampai ${numId(sw.highPrice)}`;
+    detailId.push(`🧹 Sapuan ${SIDE_ID[sw.side]} ${rupiahId(sw.value)}: ${numId(sw.prints)} transaksi, harga ${range} (${clock(sw.from)} sampai ${clock(sw.to)})`);
   }
   const total = f.buyValue + f.sellValue;
   if (total > 0) {
+    const lead = f.buyValue >= f.sellValue ? "buy" : "sell";
     detailId.push(
-      `Semua transaksi minimal ${rupiahId(f.threshold.value * t.fillShare)} di rentang waktu itu: beli ${rupiahId(f.buyValue)}, jual ${rupiahId(f.sellValue)}, jadi ${numId(f.share * 100, 0)}% ${SIDE_ID[f.buyValue >= f.sellValue ? "buy" : "sell"]}.`,
+      `⚖️ ${numId(f.share * 100, 0)}% ${SIDE_ID[lead]}: beli ${rupiahId(f.buyValue)}, jual ${rupiahId(f.sellValue)} (transaksi minimal ${rupiahId(f.threshold.value * t.fillShare)})`,
     );
   }
   detailId.push(
-    `Ambang whale saham ini ${rupiahId(f.threshold.value)}${f.threshold.basis === "fallback" ? " (rata-rata nilai harian tidak terbaca, memakai ambang cadangan)" : ""}.`,
+    `🎯 Ambang whale saham ini ${rupiahId(f.threshold.value)}${f.threshold.basis === "fallback" ? " (ambang cadangan, nilai harian tidak terbaca)" : ""}`,
   );
-  if (triggers.length) detailId.push(`Pemicu: ${triggers.join("; ")}.`);
-  else if (source === "sweep") detailId.push("Ditemukan lewat pemantauan transaksi besar seluruh pasar.");
+  // The triggers are other alerts' headlines, "SYM: what"; the symbol is already in this headline.
+  if (triggers.length) detailId.push(`🔎 Pemicu: ${triggers.map((x) => x.replace(new RegExp(`^${f.symbol}: `), "")).join("; ")}`);
+  else if (source === "sweep") detailId.push("🔎 Ditemukan lewat pemantauan seluruh pasar");
 
   const headline =
     dir === "two-way" ? `${f.symbol}: large two-way prints` : `${f.symbol}: large ${dir} prints (aggressor ${dir})`;
@@ -409,5 +408,5 @@ export function followUpText(f: WhaleFinding, minutes: number): string {
   const total = f.buyValue + f.sellValue;
   const dir = f.direction === "two-way" ? "dua arah" : `${SIDE_ID[f.direction]} (${AGGRESSOR_ID[f.direction]})`;
   const price = f.largest?.price ?? f.sweep?.highPrice;
-  return `🐋 ${f.symbol} lanjutan: transaksi besar ${rupiahId(total)} lagi dalam ${numId(minutes)} menit terakhir, ${dir}${price ? `, harga ${numId(price)}` : ""}.`;
+  return `🐋 ${f.symbol} lanjutan: ${dir}\n💰 ${rupiahId(total)} lagi dalam ${numId(minutes)} menit terakhir${price ? `, harga ${numId(price)}` : ""}`;
 }

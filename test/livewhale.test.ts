@@ -234,7 +234,7 @@ test("several prints over the threshold are told as the others in the same stret
     print({ seconds: 36_040, time: "10:00:40", value: 120_000_000, side: "buy" }),
   ];
   const text = whaleSignal(judgePrints("KECL", ps, th50)!, [], "sweep").id!.detail.join("\n");
-  assert.match(text, /Selain itu ada 2 transaksi lain yang juga di atas ambang, antara 10\.00\.00 dan 10\.00\.40\. Totalnya 3 transaksi besar senilai Rp 570 jt\./);
+  assert.match(text, /🔁 Total 3 transaksi di atas ambang, Rp 570 jt \(10\.00\.00 sampai 10\.00\.40\)/);
   assert.doesNotMatch(text, /transaksi tunggal|jendela ini/);
 });
 
@@ -249,11 +249,12 @@ test("the whale message gives size relative to the stock, the trigger, and no cl
   assert.equal(s.kind, "whale");
   assert.equal(s.id!.headline, "KECL: order beli besar (HAKA)");
   const text = s.id!.detail.join("\n");
-  assert.match(text, /13\.41\.25 · 15\.000 lot di 100 · Rp 150 jt dalam 1 transaksi \(HAKA\), 15,0% dari rata-rata nilai harian saham ini, 75x rata-rata transaksinya hari ini/);
-  assert.match(text, /Semua transaksi minimal Rp 10 jt di rentang waktu itu: beli Rp 150 jt, jual Rp 0, jadi 100% beli\./);
-  assert.match(text, /Pemicu: KECL: tembok antrean beli/);
+  assert.match(text, /💰 Rp 150 jt sekali transaksi, 15\.000 lot di 100 \(13\.41\.25\)/);
+  assert.match(text, /📊 Setara 15,0% nilai harian rata-rata, 75x transaksi rata-rata hari ini/);
+  assert.match(text, /⚖️ 100% beli: beli Rp 150 jt, jual Rp 0 \(transaksi minimal Rp 10 jt\)/);
+  assert.match(text, /🔎 Pemicu: tembok antrean beli/, "the trigger drops the symbol the headline already names");
   assert.doesNotMatch(text, /broker|bandar|pelaku/i);
-  assert.match(followUpText(f, 3), /^🐋 KECL lanjutan: transaksi besar Rp 150 jt lagi dalam 3 menit terakhir, beli \(HAKA\), harga 100\.$/);
+  assert.equal(followUpText(f, 3), "🐋 KECL lanjutan: beli (HAKA)\n💰 Rp 150 jt lagi dalam 3 menit terakhir, harga 100");
 });
 
 /* ------------------------------- the tape ------------------------------- */
