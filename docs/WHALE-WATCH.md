@@ -22,9 +22,13 @@ Yang **tidak bisa** dilakukan: menyebut siapa pembelinya. IDX menutup kode broke
 sejak 6 Desember 2021. Blok "Broker context" di bawah alert adalah ringkasan broker **sesi
 sebelumnya** (akhir hari), dan diberi label dengan tanggalnya. Itu konteks, bukan pengamatan live.
 
-Filter alert sudah aktif bawaan: maksimal 5 alert per interval dan 25 per sesi, cooldown 15 menit
-untuk sinyal yang sama, 15 menit pertama dan menjelang penutupan hanya meloloskan sinyal `critical`,
-dan kalau >40% saham memicu sinyal yang sama, yang dikirim cukup satu pesan "market-wide".
+Jumlah alert ke Telegram **tidak dibatasi**. Yang menyaring adalah detektornya sendiri, ditambah
+tiga pengaman: cooldown 15 menit untuk sinyal yang sama di saham yang sama (kecuali sinyal baru 2x
+lebih kuat), 15 menit pertama dan menjelang penutupan hanya meloloskan sinyal `critical`, dan kalau
+>40% saham memicu sinyal yang sama, yang dikirim cukup satu pesan "market-wide". Alert `wall-change`
+hanya dikirim kalau antrean yang muncul atau ditarik bernilai minimal Rp1 miliar (`wallMinValue` di
+`src/live/signals.ts`). (Perintah `stockbit-live signals` tetap memakai batas lama 5 per interval
+dan 25 per sesi.)
 
 ## 1. Siapkan bot Telegram
 
@@ -85,33 +89,44 @@ Ctrl-C untuk berhenti. Catatan: jam bursa ini tidak tahu hari libur IDX.
 | `watch BBCA,BMRI,ANTM 1m` | Saham tertentu saja. |
 | `watch all 1m transaksi besar minimal 1 miliar` | Kalimat bebas di akhir mempersempit sinyal (di sini: hanya value-surge, window di bawah Rp1 miliar diabaikan). Saat start, watcher mencetak bagaimana kalimat itu ditafsirkan. Lihat `src/live/promptspec.ts`. |
 
-Interval tercepat 20 detik. Order book dibaca maksimal untuk 12 saham per pass (yang paling ramai),
-supaya akun Anda tidak membanjiri API yang tidak resmi ini.
+Interval tercepat 20 detik. Order book dibaca maksimal untuk 12 saham per pass, supaya akun Anda
+tidak membanjiri API yang tidak resmi ini. Dua belas itu dibagi begini (dengan interval 1 menit):
+
+- Tiap 5 menit, `top-stock` dibaca sekali dan 48 saham teraktif disusun menjadi antrean.
+- **3 slot tetap** dibaca setiap menit: saham yang baru memicu alert (selama 15 menit), lalu saham
+  teratas di antrean.
+- **9 slot bergilir** berjalan menyusuri sisa antrean. Dalam 5 menit, 9 x 5 = 45 saham terbaca.
+- Total 3 + 45 = 48 saham per 5 menit, tetap 12 request order book per menit.
+
+Konsekuensinya, saham di slot bergilir dihitung dengan jendela sekitar 5 menit, jadi alertnya bisa
+terlambat sampai 5 menit dan lonjakan nilainya dirata-rata selama 5 menit. Saham di slot tetap tetap
+memakai jendela 1 menit. Baris `pass` di log mencatat `booksRead` dan `ranked: true` pada pass yang
+menyusun ulang antrean.
 
 ### Dari mana angkanya
 
 Sejak 26 Nov 2026, semua detektor menghitung dari **order book** masing-masing saham. Order book
 memuat nilai, jumlah transaksi, dan volume kumulatif sejak bursa buka, jadi selisih dua bacaan
-berturut-turut adalah transaksi yang terjadi di antaranya. `top-stock` hanya dipakai untuk memilih
-12 saham teraktif yang dibaca order book-nya.
+berturut-turut adalah transaksi yang terjadi di antaranya. `top-stock` hanya dipakai untuk menyusun
+antrean 48 saham teraktif.
 
 Alasannya: pada 26 Nov, saat bursa buka, angka `top-stock` terbukti bukan angka kumulatif. Nilainya
 bisa turun antar bacaan dan 27 dari 100 baris punya frekuensi negatif. Menghitung selisih dari angka
 itu menghasilkan 13 kali "sesi baru" palsu dalam satu pagi dan alert yang membandingkan dengan volume
 transaksi yang keliru.
 
-Akibatnya, saham hanya bisa memicu alert setelah order book-nya dibaca dua kali berturut-turut. Saham
-yang keluar dari 12 teratas lebih dari 5 menit dianggap mulai dari awal lagi.
+Akibatnya, saham hanya bisa memicu alert setelah order book-nya dibaca dua kali. Bacaan yang berjarak
+lebih dari 7 menit tidak dibandingkan; bacaan baru menjadi titik awal lagi.
 
 ### Flag
 
 - `--wide`: selain 100 saham top-stock, pantau juga daftar **top nilai, top volume, dan top
   frekuensi** dari Movers Stockbit (masing-masing maksimal 50 saham, jadi 3 request tambahan per
-  pass). Ini untuk saham murah yang transaksinya banyak secara lot tapi kecil secara rupiah, yang
+  penyusunan antrean). Ini untuk saham murah yang transaksinya banyak secara lot tapi kecil secara rupiah, yang
   hampir tidak pernah masuk top-stock. Saham yang hanya datang dari daftar Movers:
   - memakai batas transaksi besar Rp100 juta per window, lebih rendah dari batas biasa Rp300 juta,
-  - mendapat 4 dari 12 slot order book, dipilih berdasarkan lot terbanyak di window itu (slot yang
-    tidak terpakai kembali ke saham top-stock, jadi jumlah request order book tetap 12),
+  - mendapat 16 dari 48 tempat di antrean, dipilih berdasarkan lot terbanyak (tempat yang tidak
+    terpakai kembali ke saham top-stock, jadi jumlah request order book tetap 12 per menit),
   - alert-nya diberi keterangan "Saham ini masuk lewat daftar top ... Stockbit, di luar 100 saham
     utama".
   **Catatan 26 Nov 2026:** selama jam bursa ketiga daftar Movers kembali KOSONG, dan baru terisi

@@ -86,6 +86,12 @@ export interface Thresholds {
   wallShrink: number;
   /** #6 — ...and the trading that happened must explain less than this fraction of the loss. */
   wallUnexplained: number;
+  /**
+   * #6 — the size that left or arrived, in RUPIAH (shares × price), must reach this. Absent means no
+   * floor. Added 2026-11-26 after the first full morning sent 20 wall-change alerts out of 25,
+   * several for levels worth a few hundred million rupiah on cheap stocks.
+   */
+  wallMinValue?: number;
   /** #7 — today's value versus the previous session's total. */
   awakeningMultiple: number;
 }
@@ -113,6 +119,7 @@ export const DEFAULTS: Thresholds = {
   imbalanceLow: 25,
   wallShrink: 0.5,
   wallUnexplained: 0.5,
+  wallMinValue: 1_000_000_000,
   awakeningMultiple: 3,
 };
 
@@ -422,7 +429,9 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
     const lost = c.before - c.after;
     const grown = c.after - c.before;
 
-    if (lost > 0 && lost / c.before >= t.wallShrink) {
+    const tooSmall = (shares: number) => t.wallMinValue !== undefined && shares * c.price < t.wallMinValue;
+
+    if (lost > 0 && lost / c.before >= t.wallShrink && !tooSmall(lost)) {
       // Only interesting when trading cannot account for it.
       const explained = Math.min(1, tradedShares / lost);
       if (explained >= t.wallUnexplained) continue;
@@ -439,7 +448,7 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
             headline: `${book.symbol}: ${toLots(lost).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots withdrawn from the ${c.side} at ${c.price}`,
             detail: [
               `Level went ${toLots(c.before).toLocaleString("en-US", { maximumFractionDigits: 0 })} → ${toLots(c.after).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots.`,
-              `Only ${toLots(tradedShares).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots traded market-wide in that time, so trading explains ${(explained * 100).toFixed(0)}% of it.`,
+              `Only ${toLots(tradedShares).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots of this stock traded in that time, so trading explains ${(explained * 100).toFixed(0)}% of it.`,
               "Depth withdrawn. That is an observation about the book, not a claim about anyone's intent.",
             ],
             priceBucket: bucket(c.price),
@@ -447,7 +456,7 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
               headline: `${book.symbol}: antrean besar ${sideId(c.side)} ditarik di harga ${numId(c.price)}`,
               detail: [
                 `Antrean di harga itu turun dari ${lotsId(c.before)} lot menjadi ${lotsId(c.after)} lot.`,
-                `Padahal yang tertransaksi di seluruh pasar dalam waktu itu cuma ${lotsId(tradedShares)} lot, jadi sebagian besar ditarik, bukan dimakan.`,
+                `Padahal saham ini dalam waktu itu cuma tertransaksi ${lotsId(tradedShares)} lot, jadi sebagian besar ditarik, bukan dimakan.`,
                 "Ini pengamatan atas order book, bukan tuduhan soal niat siapa pun.",
               ],
             },
@@ -456,7 +465,7 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
       }
     }
 
-    if (grown > 0 && c.before > 0 && grown / c.before >= 1 && grown > tradedShares) {
+    if (grown > 0 && c.before > 0 && grown / c.before >= 1 && grown > tradedShares && !tooSmall(grown)) {
       const surprise = 1 + Math.min(2, grown / Math.max(1, tradedShares));
       const score = grown;
       if (!best || score > best.score) {

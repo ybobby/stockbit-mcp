@@ -20,7 +20,17 @@ import { getStore } from "../src/auth/store.ts";
 import { resetSession } from "../src/auth/session.ts";
 import { deltaBetween, sampleFromBook, type SymbolSample } from "../src/live/tape.ts";
 import { parseOrderBook } from "../src/live/orderbook.ts";
-import { SignalWatcher, MAX_BOOK_GAP_SECONDS } from "../src/live/watcher.ts";
+import {
+  SignalWatcher,
+  MAX_BOOK_GAP_SECONDS,
+  HOT_SLOTS,
+  ROTATION_SLOTS,
+  QUEUE_SIZE,
+  RANK_EVERY_MS,
+  pickThisPass,
+} from "../src/live/watcher.ts";
+import { AlertEngine, FATIGUE_DEFAULTS } from "../src/live/alertengine.ts";
+import { wallChange, DEFAULTS, type Signal } from "../src/live/signals.ts";
 import { compilePrompt } from "../src/live/promptspec.ts";
 import type { ResolvedScope } from "../src/live/scope.ts";
 
@@ -63,6 +73,7 @@ const realFetch = globalThis.fetch;
 let topStock: unknown[] = [];
 let books: Record<string, unknown> = {};
 let bookRequests: string[] = [];
+let topStockRequests = 0;
 
 before(() => {
   getStore().set("REFRESH");
@@ -72,8 +83,11 @@ before(() => {
     const json = (body: unknown) =>
       new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
     if (u.includes("/login/refresh")) return json({ data: { access_token: farFutureJwt() } });
-    if (u.includes("/order-trade/top-stock")) return json({ data: topStock });
-    const m = /\/orderbook\/companies\/([A-Z]+)/.exec(u);
+    if (u.includes("/order-trade/top-stock")) {
+      topStockRequests++;
+      return json({ data: topStock });
+    }
+    const m = /\/orderbook\/companies\/([A-Z0-9]+)/.exec(u);
     if (m) {
       bookRequests.push(m[1]);
       return json({ message: "ok", data: books[m[1]] });
@@ -86,6 +100,7 @@ beforeEach(() => {
   topStock = [];
   books = {};
   bookRequests = [];
+  topStockRequests = 0;
 });
 
 after(() => {
@@ -187,4 +202,100 @@ test("a wall that grew while the book shows little trading is still reported, ju
   const r = await w.pass(new Date(t0.getTime() + 60_000));
   assert.equal(r.deltas?.[0].lots, 10);
   assert.ok(r.signals.some((s) => s.kind === "wall-change" && s.symbol === "ASII"), JSON.stringify(r.signals.map((s) => s.kind)));
+});
+
+/* ------------------------------ the rotation ------------------------------ */
+
+const q = (n: number) => Array.from({ length: n }, (_, i) => ({ symbol: `S${String(i).padStart(2, "0")}` }));
+
+test("the queue is 48: three hot slots plus nine rotating for five passes", () => {
+  assert.equal(QUEUE_SIZE, 48);
+  assert.equal(HOT_SLOTS + ROTATION_SLOTS, 12, "the per-pass request budget is unchanged");
+});
+
+test("five passes read every one of the 48, twelve books a pass, the top three every time", () => {
+  const queue = q(48);
+  let cursor = 0;
+  const seen = new Set<string>();
+  for (let i = 0; i < 5; i++) {
+    const r = pickThisPass(queue, [], cursor);
+    cursor = r.cursor;
+    assert.equal(r.picked.length, 12);
+    assert.deepEqual(r.picked.slice(0, 3).map((x) => x.symbol), ["S00", "S01", "S02"]);
+    for (const x of r.picked) seen.add(x.symbol);
+  }
+  assert.equal(seen.size, 48);
+});
+
+test("a symbol that just alerted takes a hot slot ahead of the ranking", () => {
+  const r = pickThisPass(q(48), ["S30"], 0);
+  assert.deepEqual(r.picked.slice(0, 3).map((x) => x.symbol), ["S30", "S00", "S01"]);
+  assert.equal(r.picked.filter((x) => x.symbol === "S30").length, 1, "never read twice in one pass");
+  assert.equal(r.picked.length, 12);
+});
+
+test("a short queue is read in full without repeats", () => {
+  const r = pickThisPass(q(5), [], 0);
+  assert.deepEqual(r.picked.map((x) => x.symbol), ["S00", "S01", "S02", "S03", "S04"]);
+});
+
+test("top-stock is read once per re-rank, not every pass", async () => {
+  const w = watcher();
+  const t0 = new Date("2026-11-26T03:00:00Z").getTime();
+  topStock = q(60).map((x, i) => topRow(x.symbol, 1e10 - i, 10));
+  books = Object.fromEntries(q(60).map((x) => [x.symbol, book(x.symbol, 1e10, 1_000, 1e7)]));
+  for (let i = 0; i < 5; i++) await w.pass(new Date(t0 + i * 60_000));
+  assert.equal(topStockRequests, 1);
+  assert.equal(bookRequests.length, 60, "twelve books a pass");
+  assert.equal(new Set(bookRequests).size, 48);
+  const r = await w.pass(new Date(t0 + RANK_EVERY_MS));
+  assert.equal(topStockRequests, 2);
+  assert.equal(r.ranked, true);
+});
+
+test("a rotating symbol read five minutes later still gets its delta", async () => {
+  const w = watcher();
+  const t0 = new Date("2026-11-26T03:00:00Z").getTime();
+  topStock = q(48).map((x, i) => topRow(x.symbol, 1e10 - i, 10));
+  books = Object.fromEntries(q(48).map((x) => [x.symbol, book(x.symbol, 1e10, 1_000, 1e7)]));
+  for (let i = 0; i < 5; i++) await w.pass(new Date(t0 + i * 60_000));
+  books = Object.fromEntries(q(48).map((x) => [x.symbol, book(x.symbol, 1.1e10, 1_100, 1.1e7)]));
+  // Re-rank at +5 min restarts the rotation at the same order, so S03..S11 are read again.
+  const r = await w.pass(new Date(t0 + 5 * 60_000));
+  const s03 = r.deltas?.find((d) => d.symbol === "S03");
+  assert.ok(s03, JSON.stringify(r.deltas?.map((d) => d.symbol)));
+  assert.equal(s03.seconds, 300);
+  assert.equal(s03.value, 1e9);
+});
+
+/* ------------------------------ the filters ------------------------------ */
+
+const sig = (symbol: string): Signal => ({
+  kind: "value-surge",
+  symbol,
+  severity: "alert",
+  surprise: 2,
+  headline: symbol,
+  detail: [],
+  priceBucket: 0,
+  at: 0,
+});
+
+test("an uncapped engine lets every distinct alert through; the default still caps", () => {
+  const now = new Date("2026-11-26T04:00:00Z"); // 11:00 WIB, outside the quiet periods
+  const many = Array.from({ length: 40 }, (_, i) => sig(`X${i}`));
+  const capped = new AlertEngine(FATIGUE_DEFAULTS).process(many, now, 1_000);
+  assert.equal(capped.emitted.length, FATIGUE_DEFAULTS.maxPerInterval);
+  const open = new AlertEngine({ ...FATIGUE_DEFAULTS, maxPerInterval: Infinity, maxPerSession: Infinity }).process(many, now, 1_000);
+  assert.equal(open.emitted.length, 40);
+});
+
+test("a wall worth less than the rupiah floor is not reported", () => {
+  const before = parseOrderBook(book("CUAN", 1e10, 1_000, 1e7))!;
+  const small = book("CUAN", 1e10, 1_000, 1e7);
+  small.bid[0] = lvl(750, 2_000_000); // +1,000,000 shares at 750 = Rp750 jt
+  assert.equal(wallChange({ book: parseOrderBook(small)!, previous: before, tradedShares: 0 }, DEFAULTS), null);
+  const big = book("CUAN", 1e10, 1_000, 1e7);
+  big.bid[0] = lvl(750, 3_000_000); // +2,000,000 shares at 750 = Rp1,5 M
+  assert.ok(wallChange({ book: parseOrderBook(big)!, previous: before, tradedShares: 0 }, DEFAULTS));
 });

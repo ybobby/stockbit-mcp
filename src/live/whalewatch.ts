@@ -317,6 +317,8 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       at: now.toISOString(),
       symbolsSeen: result.symbolsSeen,
       ...(result.moversOnly !== undefined ? { moversOnly: result.moversOnly } : {}),
+      ...(result.ranked ? { ranked: true } : {}),
+      booksRead: result.booksRead.length,
       baseline: result.deltas === null,
       ...(result.reason ? { reason: result.reason } : {}),
       detected: result.signals.length,
