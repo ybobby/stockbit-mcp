@@ -117,7 +117,7 @@ const SEVERITY_MARK: Record<Severity, string> = {
 
 /**
  * A plain message as Telegram HTML: everything escaped, then the few words the owner asked to stand
- * out made bold with a coloured mark — the level after "Tingkat:", HAKA green, HAKI red.
+ * out made bold with a coloured mark — the level after "Level:", HAKA green, HAKI red.
  *
  * Done once, at the send, so every composer above keeps writing plain text and nothing it carries
  * (a symbol, a headline, an error message) can open a tag. `parse_mode: "HTML"` only needs `&`, `<`
@@ -126,8 +126,8 @@ const SEVERITY_MARK: Record<Severity, string> = {
 export function telegramHtml(text: string): string {
   const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const lines = escaped.split("\n");
-  // A full alert (several lines) gets its headline in bold; one-line notices stay as they are.
-  const boldHeadline = lines.length >= 3;
+  // An alert or follow-up (two lines or more) gets its headline in bold; a one-line notice stays plain.
+  const boldHeadline = lines.length >= 2;
   return lines
     .map((line, i) => {
       if (i === 0 && boldHeadline) {
@@ -136,9 +136,7 @@ export function telegramHtml(text: string): string {
       }
       if (line === DISCLAIMER) return `<i>${line}</i>`;
       for (const sev of Object.keys(SEVERITY_ID) as Severity[]) {
-        if (line.startsWith(`Tingkat: ${SEVERITY_ID[sev]} ·`)) {
-          return line.replace(`Tingkat: ${SEVERITY_ID[sev]} ·`, `${SEVERITY_MARK[sev]} <b>${SEVERITY_ID[sev]}</b> ·`);
-        }
+        if (line === `Level: ${SEVERITY_ID[sev]}`) return `Level: ${SEVERITY_MARK[sev]} <b>${SEVERITY_ID[sev]}</b>`;
       }
       return line.replace(/\bHAKA\b/g, "🟢 <b>HAKA</b>").replace(/\bHAKI\b/g, "🔴 <b>HAKI</b>");
     })
@@ -185,12 +183,13 @@ export function whaleText(signal: Signal, now: Date, context: string[] | null): 
     ...words.detail.map((d) => (/^\p{Extended_Pictographic}/u.test(d) ? d : `• ${d}`)),
   ];
   if (context?.length) lines.push("", ...context);
-  lines.push("", `Tingkat: ${SEVERITY_ID[signal.severity]} · ${wibClock(now)} WIB`, DISCLAIMER);
+  // No clock: Telegram stamps every message already (owner, 2026-11-26).
+  lines.push("", `Level: ${SEVERITY_ID[signal.severity]}`, DISCLAIMER);
   return lines.join("\n");
 }
 
 export function marketWideText(mw: NonNullable<EngineResult["marketWide"]>, now: Date): string {
-  return `📈 Sinyal yang sama muncul serentak di ${mw.count} dari ${mw.universe} saham.\nIni pergerakan pasar secara umum, bukan satu saham tertentu, jadi tidak dikirim per saham.\n\n${wibClock(now)} WIB`;
+  return `📈 Sinyal yang sama muncul serentak di ${mw.count} dari ${mw.universe} saham.\nIni pergerakan pasar secara umum, bukan satu saham tertentu, jadi tidak dikirim per saham.`;
 }
 
 /* ------------------------------------ the log ------------------------------------ */
@@ -333,7 +332,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
         // The group gets a neutral maintenance notice (owner, 2026-11-26): no login, no provider, no
         // admin chore. The operator's terminal and log line carry the actual fix.
         await send(
-          `🛠️ Whale watch sedang dalam mode maintenance. Alert berhenti sementara dan akan aktif lagi setelah ada pemberitahuan berikutnya.\n${wibClock(now)} WIB`,
+          `🛠️ Whale watch sedang dalam mode maintenance. Alert berhenti sementara dan akan aktif lagi setelah ada pemberitahuan berikutnya.`,
           { type: "stopped-auth", at: now.toISOString(), fix: "stockbit-auth login" },
         );
         deps.maintenance?.set();
@@ -351,7 +350,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       if (failures === failureNotice && !announcedOutage) {
         announcedOutage = true;
         await send(
-          `⚠️ Whale watch gagal membaca data pasar ${failures} kali berturut-turut. Kalau setelah ini sepi, itu BUKAN berarti pasar sepi.\n${wibClock(now)} WIB`,
+          `⚠️ Whale watch gagal membaca data pasar ${failures} kali berturut-turut. Kalau setelah ini sepi, itu BUKAN berarti pasar sepi.`,
           { type: "outage", at: now.toISOString(), consecutive: failures },
         );
       }
@@ -360,7 +359,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
     }
 
     if (deps.maintenance?.pending()) {
-      await send(`✅ Whale watch aktif kembali. Alert berjalan seperti biasa.\n${wibClock(now)} WIB`, {
+      await send(`✅ Whale watch aktif kembali. Alert berjalan seperti biasa.`, {
         type: "maintenance-ended",
         at: now.toISOString(),
       });
@@ -368,7 +367,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
     }
 
     if (announcedOutage) {
-      await send(`✅ Whale watch sudah bisa membaca data pasar lagi.\n${wibClock(now)} WIB`, {
+      await send(`✅ Whale watch sudah bisa membaca data pasar lagi.`, {
         type: "recovered",
         at: now.toISOString(),
       });
@@ -416,7 +415,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
     }
 
     for (const text of result.followUps ?? []) {
-      await send(`${text}\n${wibClock(now)} WIB`, { type: "whale-follow", at: now.toISOString(), text });
+      await send(text, { type: "whale-follow", at: now.toISOString(), text });
       summary.alertsSent++;
     }
 

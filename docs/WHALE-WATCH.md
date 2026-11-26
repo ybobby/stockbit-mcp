@@ -22,9 +22,10 @@ bukan sinyal beli atau jual.
 Sinyal 📈 📚 🧱 📏 🌅 adalah **anomali** dan pesannya diawali "Anomali ·". Kalau anomali di satu saham
 lolos konfirmasi, yang dikirim cukup satu pesan 🐋 yang menyebut anomali itu sebagai pemicunya.
 
-Telegram tidak bisa mewarnai teks, jadi warna dipasang lewat tanda di depan kata yang ditebalkan:
-tingkat ⬜ **Info**, 🟨 **Pantau**, 🟧 **Penting**, 🟥 **Sangat penting**, serta 🟢 **HAKA** dan
-🔴 **HAKI**. Pesan dikirim sebagai HTML Telegram. Kalau Telegram menolak markup-nya, pesan yang sama
+Telegram tidak bisa mewarnai teks, jadi warna dipasang lewat tanda di depan kata yang ditebalkan. Baris
+"Level:" memakai ⬜ **Info**, 🟨 **Pantau**, 🟧 **Penting**, 🟥 **Sangat penting**, serta 🟢 **HAKA** dan
+🔴 **HAKI**. Pesan tidak memuat jam sendiri karena Telegram sudah mencatat waktu tiap pesan. Jam
+transaksi di isi pesan ditulis JJ:MM:DD. Pesan dikirim sebagai HTML Telegram. Kalau Telegram menolak markup-nya, pesan yang sama
 dikirim ulang sebagai teks polos.
 
 Yang **tidak bisa** dilakukan: menyebut siapa pembelinya. IDX menutup kode broker di running trade

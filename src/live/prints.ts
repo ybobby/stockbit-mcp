@@ -314,7 +314,8 @@ export function judgePrints(symbol: string, prints: Print[], threshold: Threshol
 
 /* ------------------------------ words ------------------------------ */
 
-const clock = (time: string) => time.replace(/:/g, ".");
+/** HH:MM:SS as the tape gives it. Colons throughout, like every other time in the messages. */
+const clock = (time: string) => time;
 const SIDE_ID = { buy: "beli", sell: "jual" } as const;
 const AGGRESSOR_ID = { buy: "HAKA", sell: "HAKI" } as const;
 

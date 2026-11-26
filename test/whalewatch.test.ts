@@ -114,7 +114,7 @@ function harness(
 
 /* ------------------------------- the loop ------------------------------- */
 
-test("an emitted signal reaches Telegram once, with its headline and the WIB time", async () => {
+test("an emitted signal reaches Telegram once, with its headline and level, and no clock of its own", async () => {
   const h = harness([pass({ deltas: null, reason: "first-poll" }), pass({ signals: [surge], engine: { emitted: [surge], suppressed: [], marketWide: null } })]);
   const summary = await runWhaleWatch(h.deps, { intervalMs: 60_000 });
 
@@ -123,7 +123,8 @@ test("an emitted signal reaches Telegram once, with its headline and the WIB tim
   // Unconfirmed on the tape, a value surge is an anomaly and says so; 🐋 is kept for confirmed whales.
   assert.match(h.sent[0], /^<b>📈 Anomali · TEST: transaksi besar masuk<\/b>/);
   assert.match(h.sent[0], /Rp 2,10 M berpindah tangan/);
-  assert.match(h.sent[0], /\n🟧 <b>Penting<\/b> · 10:01:00 WIB/);
+  assert.match(h.sent[0], /\nLevel: 🟧 <b>Penting<\/b>\n/);
+  assert.doesNotMatch(h.sent[0], /WIB/, "Telegram stamps the message; the text carries no clock");
   assert.match(h.sent[0], /<i>Bukan rekomendasi beli atau jual\.<\/i>/);
   assert.match(h.sent[0], /Bukan rekomendasi beli atau jual/);
   assert.doesNotMatch(h.sent[0], /bn in 60s/, "the Indonesian text replaces the English, it is not appended");
@@ -309,11 +310,12 @@ test("the clock helpers speak WIB", () => {
 });
 
 test("the Telegram text escapes everything, bolds the headline, marks the level and HAKA/HAKI", () => {
-  const html = telegramHtml("🐋 X <b>&: order beli besar (HAKA)\n\n💰 jual (HAKI)\n\nTingkat: Sangat penting · 10:01:00 WIB\nBukan rekomendasi beli atau jual.");
+  const html = telegramHtml("🐋 X <b>&: order beli besar (HAKA)\n\n💰 jual (HAKI)\n\nLevel: Sangat penting\nBukan rekomendasi beli atau jual.");
   const [head, , body, , level, foot] = html.split("\n");
   assert.equal(head, "<b>🐋 X &lt;b&gt;&amp;: order beli besar (🟢 HAKA)</b>", "escaped, and no tag nested in the bold");
   assert.equal(body, "💰 jual (🔴 <b>HAKI</b>)");
-  assert.equal(level, "🟥 <b>Sangat penting</b> · 10:01:00 WIB");
+  assert.equal(level, "Level: 🟥 <b>Sangat penting</b>");
   assert.equal(foot, "<i>Bukan rekomendasi beli atau jual.</i>");
-  assert.equal(telegramHtml("✅ Satu baris.\n10:00 WIB"), "✅ Satu baris.\n10:00 WIB", "a short notice is left plain");
+  assert.equal(telegramHtml("✅ Satu baris."), "✅ Satu baris.", "a one-line notice is left plain");
+  assert.equal(telegramHtml("🐋 A lanjutan: beli (HAKA)\n💰 Rp 1 jt"), "<b>🐋 A lanjutan: beli (🟢 HAKA)</b>\n💰 Rp 1 jt");
 });
