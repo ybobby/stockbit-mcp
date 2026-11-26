@@ -23,3 +23,14 @@
  * making a deliberate choice, and this must not overrule it.
  */
 process.env.STOCKBIT_NO_UPDATE_CHECK ??= "1";
+
+/*
+ * No real chat, ever. On 2026-11-26 the suite was run from a shell that had whale-watch.env
+ * loaded, and `test/daemon.test.ts` delivered its fixture alerts ("BBRI — above 100") to the real
+ * Telegram group, because delivery reads the target from the environment. Unconditional `delete`,
+ * not `??=`: there is no deliberate reason for a test run to reach a real bot or webhook. A test
+ * that needs a target sets one itself, with a fake token and a stubbed fetch.
+ */
+delete process.env.STOCKBIT_TELEGRAM_BOT_TOKEN;
+delete process.env.STOCKBIT_TELEGRAM_CHAT_ID;
+delete process.env.STOCKBIT_ALERT_WEBHOOK;
