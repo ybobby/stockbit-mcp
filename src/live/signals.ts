@@ -78,6 +78,12 @@ export interface Thresholds {
   minSessionTrades: number;
   /** #2 — fire when remaining depth to the band is under this multiple of recent consumption. */
   bandDepthMultiple: number;
+  /**
+   * #2 — and only once price has covered at least this share of the way from the previous close to
+   * the band. Without it a stock 2% up with a thin ladder above read as "approaching ARA" while
+   * 31.9% short of it (IRSX, 2026-11-26). Absent means no price gate.
+   */
+  bandProgressMin?: number;
   /** #3 — top-5 bid share, as a percentage, at or above which the book is one-sided. */
   imbalanceHigh: number;
   /** #3 — and at or below which it is one-sided the other way. */
@@ -115,6 +121,7 @@ export const DEFAULTS: Thresholds = {
   minWindowTrades: 3,
   minSessionTrades: 200,
   bandDepthMultiple: 3,
+  bandProgressMin: 2 / 3,
   imbalanceHigh: 75,
   imbalanceLow: 25,
   wallShrink: 0.5,
@@ -281,6 +288,11 @@ export function bandApproach(input: BandInput, t: Thresholds = DEFAULTS): Signal
   const edge = side === "ara" ? book.ara : book.arb;
   if (!remaining || edge === null || remaining.shares <= 0) return null;
 
+  // How far along the road from yesterday's close to the band the price already is, 0..1.
+  const road = edge - book.previousClose;
+  const progress = road !== 0 ? (book.lastPrice - book.previousClose) / road : 0;
+  if (t.bandProgressMin !== undefined && progress < t.bandProgressMin) return null;
+
   const ratio = remaining.shares / recentVolumeShares;
   if (ratio > t.bandDepthMultiple) return null;
 
@@ -295,7 +307,7 @@ export function bandApproach(input: BandInput, t: Thresholds = DEFAULTS): Signal
     surprise,
     headline: `${book.symbol}: ${toLots(remaining.shares).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots left before ${side.toUpperCase()} at ${edge}`,
     detail: [
-      `Price ${book.lastPrice}, ${Math.abs(pct).toFixed(1)}% from the band.`,
+      `Price ${book.lastPrice}, ${Math.round(progress * 100)}% of the way from the previous close, ${Math.abs(pct).toFixed(1)}% from the band.`,
       `At the last ${Math.round(windowSeconds)}s of pace that is about ${minutes.toFixed(1)} minute(s) of supply.`,
       remaining.complete
         ? "The ladder reaches the band, so this is the full remaining depth."
@@ -306,7 +318,7 @@ export function bandApproach(input: BandInput, t: Thresholds = DEFAULTS): Signal
     id: {
       headline: `${book.symbol}: mendekati ${side.toUpperCase()} ${numId(edge)}`,
       detail: [
-        `Harga ${numId(book.lastPrice)}, tinggal ${numId(Math.abs(pct), 1)}% lagi ke batas ${side.toUpperCase()}.`,
+        `Harga ${numId(book.lastPrice)}, sudah ${side === "ara" ? "naik" : "turun"} ${numId(Math.abs(((book.lastPrice - book.previousClose) / book.previousClose) * 100), 1)}% dari penutupan kemarin, tinggal ${numId(Math.abs(pct), 1)}% lagi ke batas ${side.toUpperCase()}.`,
         `Antrean ${side === "ara" ? "jual" : "beli"} yang tersisa sebelum ${side.toUpperCase()}: ${lotsId(remaining.shares)} lot.`,
         `Dengan kecepatan transaksi ${Math.round(windowSeconds)} detik terakhir, antrean itu habis dalam sekitar ${numId(minutes, 1)} menit.`,
         ...(remaining.complete

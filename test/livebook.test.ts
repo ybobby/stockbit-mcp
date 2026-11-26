@@ -30,7 +30,7 @@ import {
   pickThisPass,
 } from "../src/live/watcher.ts";
 import { AlertEngine, FATIGUE_DEFAULTS } from "../src/live/alertengine.ts";
-import { wallChange, DEFAULTS, type Signal } from "../src/live/signals.ts";
+import { wallChange, bandApproach, DEFAULTS, type Signal } from "../src/live/signals.ts";
 import { compilePrompt } from "../src/live/promptspec.ts";
 import type { ResolvedScope } from "../src/live/scope.ts";
 
@@ -312,4 +312,35 @@ test("floor-locked is sent once per symbol per session, however long the lock la
   assert.equal(engine.process([locked("CSMI")], new Date(t0 + 200 * 60_000), 1_000).emitted.length, 1, "another symbol still gets its one");
   engine.resetSession();
   assert.equal(engine.process([locked("MPXL")], new Date(t0 + 24 * 3600_000), 1_000).emitted.length, 1, "a new day starts fresh");
+});
+
+/* ------------------------------ band approach ------------------------------ */
+
+/** IRSX on 2026-11-26: previous close 181, ARA 244, a thin offer ladder all the way up. */
+function irsx(last: number) {
+  const offer = [];
+  for (let p = last + 1; p <= 244; p += 1) offer.push(lvl(p, 100_000));
+  return parseOrderBook({
+    ...book("IRSX", 1e10, 1_000, 1e7),
+    lastprice: last,
+    previous: 181,
+    ara: { value: "244", visible: true },
+    arb: { value: "118", visible: true },
+    bid: [lvl(last - 1, 1_000_000)],
+    offer,
+  })!;
+}
+
+test("a stock 2% up is not 'approaching ARA', however thin the ladder above it", () => {
+  // 185 is 31.9% short of 244. The ladder alone would fire: it drains in a few minutes at pace.
+  const s = bandApproach({ book: irsx(185), recentVolumeShares: 50_000_000, windowSeconds: 300 }, DEFAULTS);
+  assert.equal(s, null);
+  const ungated = bandApproach({ book: irsx(185), recentVolumeShares: 50_000_000, windowSeconds: 300 }, { ...DEFAULTS, bandProgressMin: undefined });
+  assert.ok(ungated, "the old rule would have fired");
+});
+
+test("two thirds of the way to ARA with a thin ladder is reported, saying how far it has come", () => {
+  const s = bandApproach({ book: irsx(230), recentVolumeShares: 50_000_000, windowSeconds: 300 }, DEFAULTS);
+  assert.ok(s);
+  assert.match(s.id!.detail[0], /sudah naik 27,1% dari penutupan kemarin, tinggal 6,1% lagi ke batas ARA/);
 });

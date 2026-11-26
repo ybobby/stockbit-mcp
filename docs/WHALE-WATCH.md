@@ -15,7 +15,7 @@ bukan sinyal beli atau jual.
 | 🐋 `value-surge` | Uang masuk dalam potongan besar: rata-rata nilai per transaksi di window ini jauh di atas rata-rata sesi saham itu (default ≥5x), **dan** nilai di window ini jauh di atas laju normalnya (≥3x), minimal Rp300 juta. |
 | 📚 `book-imbalance` | Top 5 level order book berat sebelah (≥75% bid atau ≤25%) selama dua poll berturut-turut. |
 | 🧱 `wall-change` | Antrian besar di bid atau offer hilang lebih cepat daripada yang bisa dijelaskan oleh transaksi, atau wall baru muncul. |
-| 📏 `band-approach` | Sisa antrian menuju ARA/ARB tinggal sedikit dibanding laju transaksi terakhir. |
+| 📏 `band-approach` | Harga sudah menempuh minimal dua pertiga jalan dari penutupan kemarin ke batas ARA/ARB, **dan** sisa antrian menuju batas tinggal sedikit dibanding laju transaksi terakhir. |
 | ⚠️ `uma-flag`, ⛔ `floor-locked` | Saham diberi UMA, atau terkunci di ARB dengan bid kosong. |
 
 Yang **tidak bisa** dilakukan: menyebut siapa pembelinya. IDX menutup kode broker di running trade
