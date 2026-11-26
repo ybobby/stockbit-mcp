@@ -88,6 +88,21 @@ Ctrl-C untuk berhenti. Catatan: jam bursa ini tidak tahu hari libur IDX.
 Interval tercepat 20 detik. Order book dibaca maksimal untuk 12 saham per pass (yang paling ramai),
 supaya akun Anda tidak membanjiri API yang tidak resmi ini.
 
+### Dari mana angkanya
+
+Sejak 26 Nov 2026, semua detektor menghitung dari **order book** masing-masing saham. Order book
+memuat nilai, jumlah transaksi, dan volume kumulatif sejak bursa buka, jadi selisih dua bacaan
+berturut-turut adalah transaksi yang terjadi di antaranya. `top-stock` hanya dipakai untuk memilih
+12 saham teraktif yang dibaca order book-nya.
+
+Alasannya: pada 26 Nov, saat bursa buka, angka `top-stock` terbukti bukan angka kumulatif. Nilainya
+bisa turun antar bacaan dan 27 dari 100 baris punya frekuensi negatif. Menghitung selisih dari angka
+itu menghasilkan 13 kali "sesi baru" palsu dalam satu pagi dan alert yang membandingkan dengan volume
+transaksi yang keliru.
+
+Akibatnya, saham hanya bisa memicu alert setelah order book-nya dibaca dua kali berturut-turut. Saham
+yang keluar dari 12 teratas lebih dari 5 menit dianggap mulai dari awal lagi.
+
 ### Flag
 
 - `--wide`: selain 100 saham top-stock, pantau juga daftar **top nilai, top volume, dan top
@@ -99,8 +114,10 @@ supaya akun Anda tidak membanjiri API yang tidak resmi ini.
     tidak terpakai kembali ke saham top-stock, jadi jumlah request order book tetap 12),
   - alert-nya diberi keterangan "Saham ini masuk lewat daftar top ... Stockbit, di luar 100 saham
     utama".
-  Kecepatan data daftar Movers belum pernah diukur seperti top-stock. Baris `pass` di log mencatat
-  `moversOnly`, yaitu berapa saham yang datang dari daftar Movers saja.
+  **Catatan 26 Nov 2026:** selama jam bursa ketiga daftar Movers kembali KOSONG, dan baru terisi
+  setelah bursa tutup. Jadi saat ini `--wide` belum menambah saham apa pun di jam bursa (`moversOnly`
+  0). Flag tetap ada karena biayanya hanya 3 request murah, dan langsung berguna kalau Stockbit mulai
+  mengisi daftar itu di jam bursa. Daftar kosong tidak lagi dicatat sebagai error.
 
 - `--dry-run`: deteksi dan cetak, tanpa mengirim ke Telegram.
 - `--no-context`: jangan tambahkan ringkasan broker kemarin di bawah alert.
@@ -118,8 +135,10 @@ dikirim, yang berguna untuk mengkalibrasi ambang batas.
 
 - **Sesi Stockbit kedaluwarsa**: watcher mengirim satu pesan ⛔ ke Telegram lalu berhenti dengan exit
   code 3. Login ulang dengan `stockbit-auth login`, lalu jalankan lagi.
-- **Gagal membaca pasar 3x berturut-turut**: satu pesan ⚠️ dikirim ("diam bukan berarti pasar
-  sepi"), lalu pesan ✅ saat pulih.
+- **Gagal membaca pasar 3x berturut-turut** saat jam perdagangan: satu pesan ⚠️ dikirim ("diam bukan
+  berarti pasar sepi"), lalu pesan ✅ saat pulih. Kegagalan di luar jam perdagangan (pra-pembukaan
+  08:45 sampai 09:00, istirahat siang, sesudah 15:50) tetap dicatat di log dengan `"counted":false`
+  tetapi tidak memicu pesan, karena pasar memang kosong di jam itu.
 
 ## 3. Pindah ke VPS (nanti)
 

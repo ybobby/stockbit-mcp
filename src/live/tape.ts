@@ -19,6 +19,11 @@
  *     BBCA +55,665,000 across +19. One request, one hundred symbols, continuously updating.
  *   - the order book, and a symbol's cumulative volume — both tick continuously.
  *
+ * **Superseded for deltas on 2026-11-26.** During that open session top-stock no longer behaved as a
+ * cumulative counter (values fell between reads, frequencies went negative), so the whale watch now
+ * differences each symbol's ORDER BOOK figures instead and uses top-stock only to rank. See
+ * `sampleFromBook`. The arithmetic below is unchanged; only the source of the samples moved.
+ *
  * ## The idea this module rests on
  *
  * `frequency` is a COUNT OF TRANSACTIONS. So between two snapshots:
@@ -71,7 +76,7 @@ export function readRaw(value: unknown): number | null {
  * lists), so a delta is only ever taken between two samples from the same source. Differencing
  * across sources would report the gap between two services as a trade.
  */
-export type SampleSource = "top-stock" | "movers";
+export type SampleSource = "top-stock" | "movers" | "book";
 
 /** One symbol at one instant. Cumulative-since-open figures, exactly as the exchange reports them. */
 export interface SymbolSample {
@@ -230,36 +235,74 @@ export function diffSnapshots(before: MarketSnapshot, after: MarketSnapshot): Tr
   for (const [symbol, now] of after.symbols) {
     const then = before.symbols.get(symbol);
     if (!then) continue;
-    // Two services, two sets of figures for the same symbol. See `SampleSource`.
-    if ((then.source ?? "top-stock") !== (now.source ?? "top-stock")) continue;
-
-    const value = now.value - then.value;
-    const trades = now.frequency - then.frequency;
-    const lots = now.lot - then.lot;
-
-    // A NEGATIVE delta is not a small trade — it is a new session. These figures are cumulative
-    // since the open, so they reset to zero every morning, and the first poll after a reset would
-    // otherwise report a large negative "trade". Skip rather than clamp: clamping to zero would
-    // silently report "nothing traded" on the one poll where the truth is "the counter restarted".
-    if (value < 0 || trades < 0 || lots < 0) continue;
-
-    out.push({
-      symbol,
-      value,
-      lots,
-      trades,
-      averageTradeValue: trades > 0 ? value / trades : null,
-      seconds,
-      sessionValue: now.value,
-      sessionFrequency: now.frequency,
-      confidence: trades === 0 ? "none" : trades === 1 ? "single" : trades <= 5 ? "few" : "averaged",
-      ...(now.source === "movers" ? { source: "movers" as const, lists: now.lists ?? [] } : {}),
-    });
+    const d = deltaBetween(then, now, seconds);
+    if (d) out.push(d);
   }
 
   // Biggest rupiah first: that is the order a human wants to read, and it makes "top N" meaningful
   // without a second pass.
   return out.sort((a, b) => b.value - a.value);
+}
+
+/**
+ * What traded for ONE symbol between two cumulative samples, or null when no honest delta exists.
+ *
+ * Null when the two samples came from different sources (two services, two sets of figures, see
+ * `SampleSource`), and when any counter went backwards. A NEGATIVE delta is not a small trade: on a
+ * cumulative counter it means the counter restarted, and clamping it to zero would silently report
+ * "nothing traded" on the one reading where the truth is "the baseline is gone".
+ */
+export function deltaBetween(then: SymbolSample, now: SymbolSample, seconds: number): TradeDelta | null {
+  if ((then.source ?? "top-stock") !== (now.source ?? "top-stock")) return null;
+
+  const value = now.value - then.value;
+  const trades = now.frequency - then.frequency;
+  const lots = now.lot - then.lot;
+  if (value < 0 || trades < 0 || lots < 0) return null;
+
+  return {
+    symbol: now.symbol,
+    value,
+    lots,
+    trades,
+    averageTradeValue: trades > 0 ? value / trades : null,
+    seconds,
+    sessionValue: now.value,
+    sessionFrequency: now.frequency,
+    confidence: trades === 0 ? "none" : trades === 1 ? "single" : trades <= 5 ? "few" : "averaged",
+    ...(now.source === "movers" ? { source: "movers" as const, lists: now.lists ?? [] } : {}),
+  };
+}
+
+/**
+ * A symbol's cumulative session figures as its own order book reports them.
+ *
+ * This is the source the whale watch takes deltas from since 2026-11-26. That morning, during an
+ * open session, `top-stock` stopped behaving like a cumulative counter: over twenty seconds TLKM's
+ * `value` fell from 22.08B to 19.91B, 27 of its 100 rows carried a NEGATIVE `frequency`, and the
+ * same symbols' order books reported several times more (BMRI 257.1B on the book against 53.7B on
+ * top-stock, BBCA 950.4B against 35.2B). A counter that can fall is not a counter, and differencing
+ * it produced thirteen false "new session" resets in one morning. The book's `value`, `frequency`
+ * and `volume` only ever rose between reads, so deltas come from here, one request per symbol, and
+ * top-stock is kept only to choose WHICH symbols are worth a request.
+ *
+ * `volumeShares` is in SHARES (see `orderbook.ts`), so it is divided into lots here.
+ */
+export function sampleFromBook(book: {
+  symbol: string;
+  value: number;
+  frequency: number;
+  volumeShares: number;
+  average: number | null;
+}): SymbolSample {
+  return {
+    symbol: book.symbol,
+    source: "book",
+    value: book.value,
+    lot: book.volumeShares / 100,
+    frequency: book.frequency,
+    average: book.average,
+  };
 }
 
 /** True when the two snapshots straddle a session reset, so their difference is meaningless. */

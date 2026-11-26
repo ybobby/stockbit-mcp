@@ -44,9 +44,10 @@ import {
  * most 50 rows (asking for more still gives 50). `value` is here too because on 2026-11-25 the
  * movers top-value list carried BBCA and BBRI while top-stock did not.
  *
- * Their freshness against the exchange has NOT been measured the way top-stock's was. A list that
- * turned out to lag would give smaller, later deltas for the symbols only it carries; it cannot
- * make up a trade.
+ * Measured 2026-11-26: during the open session all three lists returned EMPTY (`mover_list: []`,
+ * with a session label still naming the previous day). They were populated on 2026-11-25 only after
+ * the close. So during trading hours `--wide` currently adds nothing; it is kept because it costs
+ * three cheap requests and starts working the moment Stockbit fills the lists intraday.
  */
 export const WIDE_LISTS: readonly { list: string; wire: string }[] = [
   { list: "value", wire: "MOVER_TYPE_TOP_VALUE" },
@@ -66,7 +67,9 @@ export async function takeMoversLists(): Promise<{ lists: MoversList[]; warnings
       const body = await getJson("marketMover", { params: { mover_type: wire, limit: 50 } });
       const data = (body as { data?: { mover_list?: unknown } } | null)?.data;
       const rows = Array.isArray(data?.mover_list) ? (data.mover_list as unknown[]) : [];
-      if (!rows.length) warnings.push(`movers ${list}: no rows`);
+      // An empty list is not an error: measured 2026-11-26, all three lists came back with
+      // `mover_list: []` for the whole open session and filled only after the close, so empty is
+      // the normal state while the market trades. `moversOnly: 0` on the pass already says it.
       lists.push({ list, rows });
     } catch (err) {
       warnings.push(`movers ${list}: ${err instanceof Error ? err.message : String(err)}`);
@@ -156,16 +159,25 @@ export class MarketWatcher {
 
   constructor(private readonly opts: MarketWatcherOptions = {}) {}
 
-  /** Poll once and report what traded since the last poll. */
-  async poll(now = Date.now()): Promise<PollResult> {
+  /**
+   * Read the market once: top-stock, plus the movers lists with `wide`. No differencing.
+   *
+   * Since 2026-11-26 deltas are taken from each symbol's order book (see `sampleFromBook` in
+   * tape.ts), because top-stock's figures stopped behaving as cumulative counters. What this returns
+   * is used only to decide which symbols deserve an order-book request.
+   */
+  async read(now = Date.now()): Promise<{ snapshot: MarketSnapshot } & Pick<PollResult, "moversOnly" | "warnings">> {
     let snapshot = await takeMarketSnapshot(now);
-    let wide: Pick<PollResult, "moversOnly" | "warnings"> = {};
-    if (this.opts.wide) {
-      const { lists, warnings } = await takeMoversLists();
-      const before = snapshot.symbols.size;
-      snapshot = widenSnapshot(snapshot, samplesFromMovers(lists));
-      wide = { moversOnly: snapshot.symbols.size - before, warnings };
-    }
+    if (!this.opts.wide) return { snapshot };
+    const { lists, warnings } = await takeMoversLists();
+    const before = snapshot.symbols.size;
+    snapshot = widenSnapshot(snapshot, samplesFromMovers(lists));
+    return { snapshot, moversOnly: snapshot.symbols.size - before, warnings };
+  }
+
+  /** Poll once and report what traded since the last poll, differencing top-stock itself. */
+  async poll(now = Date.now()): Promise<PollResult> {
+    const { snapshot, ...wide } = await this.read(now);
     const previous = this.previous;
     this.previous = snapshot;
 

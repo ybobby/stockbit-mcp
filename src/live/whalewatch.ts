@@ -168,6 +168,14 @@ export interface WhaleWatchDeps {
   sleep(ms: number): Promise<void>;
   /** Whether IDX is inside the polling window. */
   inWindow(now: Date): boolean;
+  /**
+   * Whether a failed pass at this moment counts toward the outage notice. Absent means always.
+   *
+   * The polling window opens at 08:45 for the pre-opening auction, when top-stock is legitimately
+   * empty. On 2026-11-26 that emptiness was counted as three failures in a row, and the group was
+   * told the watcher could not see the market a quarter of an hour before the market opened.
+   */
+  failureCounts?(now: Date): boolean;
   /** Send one message. Resolves to an error string, or null when delivered. */
   send(text: string): Promise<string | null>;
   /** Yesterday's broker context for a symbol, or null. May throw; a failure costs only the block. */
@@ -275,6 +283,12 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
         );
         summary.ended = "auth";
         return summary;
+      }
+      if (deps.failureCounts && !deps.failureCounts(now)) {
+        // Outside continuous trading an empty market is expected. Logged, not counted.
+        deps.record({ type: "pass-failed", at: now.toISOString(), counted: false, error: message(err) });
+        await deps.sleep(opts.intervalMs);
+        continue;
       }
       failures++;
       deps.record({ type: "pass-failed", at: now.toISOString(), consecutive: failures, error: message(err) });

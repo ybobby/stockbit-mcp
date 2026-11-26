@@ -5,16 +5,21 @@
  * alert engine is pure; this is where they meet the network, and keeping that boundary sharp is what
  * makes everything else testable without a market.
  *
- * ## Cost, and why the order of operations matters
+ * ## Cost, and where the numbers come from
  *
- * `top-stock` covers a hundred symbols in ONE request and drives the value-surge detector. The
- * order-book detectors need a request PER SYMBOL, so they are run only on symbols that are in scope
- * AND actually traded in the window. Watching a hundred symbols would otherwise mean a hundred
- * requests every interval against an unofficial API on the user's own account, which is the thing
- * the research was explicit about not doing.
+ * `top-stock` covers a hundred symbols in ONE request, and is used only to RANK them. The busiest
+ * twelve (some reserved for movers-only symbols with `--wide`) get an order-book request each, and
+ * every detector, value-surge included, works from those books: the book carries the symbol's
+ * cumulative value, transaction count and volume, so two consecutive readings give an honest delta.
+ * Until 2026-11-26 value-surge differenced top-stock itself; that morning top-stock's figures were
+ * seen falling between reads and going negative, which no cumulative counter does. Watching a
+ * hundred symbols would mean a hundred requests every interval against an unofficial API on the
+ * user's own account, which is the thing the research was explicit about not doing, so the twelve
+ * stay twelve.
  */
 import { getJson } from "../http/client.js";
 import { MarketWatcher, type PollResult } from "./poller.js";
+import { deltaBetween, sampleFromBook, type SymbolSample } from "./tape.js";
 import { parseOrderBook, type OrderBook } from "./orderbook.js";
 import { inScope, type ResolvedScope } from "./scope.js";
 import {
@@ -35,24 +40,49 @@ import { AlertEngine, FATIGUE_DEFAULTS, type EngineResult } from "./alertengine.
 import type { WatchSpec } from "./promptspec.js";
 import type { TradeDelta } from "./tape.js";
 
+/**
+ * The longest gap, in seconds, across which two order-book readings of one symbol are differenced.
+ *
+ * A symbol drops out of the busiest twelve and comes back later; differencing its new reading against
+ * one from half an hour ago would report thirty minutes of trading as one window. Past this gap the
+ * old reading is discarded and the new one becomes the baseline.
+ */
+export const MAX_BOOK_GAP_SECONDS = 300;
+
 /** How many symbols may be book-checked in one pass. Each is a separate request. */
 const MAX_BOOK_FETCHES = 12;
 
 /** With `wide`: how many of those slots go to symbols only the movers lists carry, by default. */
 export const DEFAULT_WIDE_BOOK_SLOTS = 4;
 
+/** What the book-slot chooser needs to know about a symbol. */
+export interface BookCandidate {
+  symbol: string;
+  /** Rupiah, as the ranking source reports it. Ranks the main slots. */
+  value: number;
+  /** Lots, as the ranking source reports it. Ranks the movers-only slots. */
+  lots: number;
+  source?: TradeDelta["source"] | SymbolSample["source"];
+  lists?: string[];
+}
+
 /**
  * Which symbols get an order-book read this pass.
  *
- * Without movers symbols this is the old rule: the busiest by rupiah, up to `max`. With them, up to
- * `wideSlots` go to movers-only symbols ranked by LOTS traded in the window, because those are the
- * cheap names whose rupiah would never win a slot. Slots one side cannot fill go to the other, so
- * the total stays `max` and the request budget does not grow.
+ * Without movers symbols: the busiest by rupiah, up to `max`. With them, up to `wideSlots` go to
+ * movers-only symbols ranked by LOTS, because those are the cheap names whose rupiah would never win
+ * a slot. Slots one side cannot fill go to the other, so the total stays `max` and the request budget
+ * does not grow. A symbol showing neither value nor lots is never read.
+ *
+ * Ranks on the CURRENT top-stock/movers reading rather than on a delta of it: since 2026-11-26 those
+ * figures are not cumulative counters, so a delta of them means nothing. Ranking on the reading
+ * keeps the chosen twelve fairly stable from one pass to the next, which is what lets each symbol's
+ * order book be differenced against its previous reading.
  */
-export function chooseBookCandidates(deltas: TradeDelta[], max: number, wideSlots: number): TradeDelta[] {
-  const traded = deltas.filter((d) => d.trades > 0);
-  const main = traded.filter((d) => d.source !== "movers").sort((a, b) => b.value - a.value);
-  const wide = traded.filter((d) => d.source === "movers").sort((a, b) => b.lots - a.lots);
+export function chooseBookCandidates<T extends BookCandidate>(items: T[], max: number, wideSlots: number): T[] {
+  const active = items.filter((d) => d.value > 0 || d.lots > 0);
+  const main = active.filter((d) => d.source !== "movers").sort((a, b) => b.value - a.value);
+  const wide = active.filter((d) => d.source === "movers").sort((a, b) => b.lots - a.lots);
   const wideTake = Math.min(wide.length, Math.max(0, wideSlots), max);
   const mainTake = Math.min(main.length, max - wideTake);
   const extraWide = Math.min(wide.length - wideTake, max - wideTake - mainTake);
@@ -96,6 +126,9 @@ export interface PassResult {
 /** Per-symbol memory the detectors need between passes. */
 interface SymbolMemory {
   lastBook?: OrderBook;
+  /** The cumulative figures from `lastBook`, and when they were read (epoch ms). */
+  lastSample?: SymbolSample;
+  lastAt?: number;
   lastImbalance?: number;
   /** Previous session's total value, for the awakening detector. */
   previousSessionValue?: number;
@@ -117,6 +150,7 @@ export class SignalWatcher {
   private readonly market: MarketWatcher;
   private readonly engine: AlertEngine;
   private readonly memory = new Map<string, SymbolMemory>();
+  private passes = 0;
 
   constructor(private readonly opts: WatcherOptions) {
     // The prompt's severity floor has to reach the engine, which is the only thing that enforces it.
@@ -148,135 +182,125 @@ export class SignalWatcher {
 
   async pass(now = new Date()): Promise<PassResult> {
     const t = this.opts.thresholds ?? DEFAULTS;
-    const errors: string[] = [];
-    const poll = await this.market.poll(now.getTime());
+    const at = now.getTime();
+    const read = await this.market.read(at);
+    const errors: string[] = [...(read.warnings ?? [])];
+    const wideCount = read.moversOnly !== undefined ? { moversOnly: read.moversOnly } : {};
 
-    if (!poll.deltas) {
-      return {
-        at: poll.at,
-        symbolsSeen: poll.symbolsSeen,
-        deltas: null,
-        reason: poll.reason,
-        signals: [],
-        engine: null,
-        booksRead: [],
-        errors: [...errors, ...(poll.warnings ?? [])],
-        ...(poll.moversOnly !== undefined ? { moversOnly: poll.moversOnly } : {}),
-      };
+    // top-stock (and the movers lists) only RANK here. Deltas come from each symbol's own order book,
+    // whose figures are cumulative; see `sampleFromBook`.
+    const ranked: (BookCandidate & { sample: SymbolSample })[] = [];
+    for (const sample of read.snapshot.symbols.values()) {
+      if (!inScope(this.opts.scope, sample.symbol)) continue;
+      ranked.push({
+        symbol: sample.symbol,
+        value: sample.value,
+        lots: sample.lot,
+        source: sample.source,
+        ...(sample.lists ? { lists: sample.lists } : {}),
+        sample,
+      });
     }
 
-    errors.push(...(poll.warnings ?? []));
-    const mine = poll.deltas.filter((d) => inScope(this.opts.scope, d.symbol));
+    const candidates = chooseBookCandidates(
+      ranked,
+      MAX_BOOK_FETCHES,
+      this.opts.wide ? (this.opts.wideBookSlots ?? DEFAULT_WIDE_BOOK_SLOTS) : 0,
+    );
+
     const signals: Signal[] = [];
+    const deltas: TradeDelta[] = [];
+    const booksRead: string[] = [];
     // Every detector reports through this, so a movers-only symbol is labelled whichever one fired.
-    const add = (s: Signal | null, d: TradeDelta) => {
-      if (s) signals.push(d.source === "movers" ? tagWide(s, d.lists) : s);
+    const add = (s: Signal | null, c: BookCandidate) => {
+      if (s) signals.push(c.source === "movers" ? tagWide(s, c.lists) : s);
     };
 
-    // ---- value surge (#1): free, one request already spent ----
-    if (this.enabled("value-surge")) {
-      for (const d of mine) {
-        if (this.opts.spec.minValue !== null && d.value < this.opts.spec.minValue) continue;
+    for (const c of candidates) {
+      let book: OrderBook | null = null;
+      try {
+        book = parseOrderBook(await getJson("orderbook", { segments: { symbol: c.symbol } }));
+      } catch (err) {
+        errors.push(`${c.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!book) {
+        errors.push(`${c.symbol}: order book did not parse`);
+        continue;
+      }
+      booksRead.push(c.symbol);
+      const m = this.mem(c.symbol);
+
+      // The delta against this symbol's previous book, when there is an honest one to take.
+      const sample = sampleFromBook(book);
+      const seconds = m.lastAt !== undefined ? (at - m.lastAt) / 1000 : 0;
+      const fresh = m.lastSample !== undefined && seconds > 0 && seconds <= MAX_BOOK_GAP_SECONDS;
+      const raw = fresh && m.lastSample ? deltaBetween(m.lastSample, sample, seconds) : null;
+      const d: TradeDelta | null = raw
+        ? { ...raw, ...(c.source === "movers" ? { source: "movers" as const, lists: c.lists ?? [] } : {}) }
+        : null;
+      if (d) deltas.push(d);
+      // A stale previous book is no baseline for the book detectors either.
+      const previousBook = fresh ? m.lastBook : undefined;
+
+      if (d && this.enabled("value-surge") && !(this.opts.spec.minValue !== null && d.value < this.opts.spec.minValue)) {
         // A symbol that has been firing all session gets a harder gate, per the adaptive rule.
         const widen = this.engine.widenFactor(d.symbol);
         const base: Thresholds =
-          d.source === "movers" ? { ...t, minWindowValue: t.minWindowValueWide ?? t.minWindowValue } : t;
+          c.source === "movers" ? { ...t, minWindowValue: t.minWindowValueWide ?? t.minWindowValue } : t;
         const scaled: Thresholds =
           widen === 1 ? base : { ...base, concentration: base.concentration * widen, rate: base.rate * widen };
-        const s = valueSurge(
-          {
-            delta: d,
-            sessionValue: d.sessionValue,
-            sessionFrequency: d.sessionFrequency,
-            elapsedSeconds: this.opts.elapsedSeconds(),
-          },
-          scaled,
+        add(
+          valueSurge(
+            { delta: d, sessionValue: d.sessionValue, sessionFrequency: d.sessionFrequency, elapsedSeconds: this.opts.elapsedSeconds() },
+            scaled,
+          ),
+          c,
         );
-        add(s, d);
       }
+
+      if (this.enabled("awakening")) {
+        const prev = m.previousSessionValue;
+        if (prev !== undefined) add(awakening({ symbol: c.symbol, todayValue: book.value, previousSessionValue: prev }, t), c);
+      }
+
+      if (d && this.enabled("band-approach")) {
+        add(bandApproach({ book, recentVolumeShares: d.lots * 100, windowSeconds: d.seconds }, t), c);
+      }
+      if (this.enabled("book-imbalance")) {
+        add(bookImbalance({ book, previousPercent: fresh ? (m.lastImbalance ?? null) : null }, t), c);
+      }
+      if (d && previousBook && this.enabled("wall-change")) {
+        add(wallChange({ book, previous: previousBook, tradedShares: d.lots * 100 }, t), c);
+      }
+      if (this.enabled("uma-flag")) add(umaFlag(book), c);
+      if (this.enabled("floor-locked")) add(floorLocked(book), c);
+
+      m.lastBook = book;
+      m.lastSample = sample;
+      m.lastAt = at;
+      m.lastImbalance = topFiveBidPercent(book) ?? undefined;
     }
 
-    // ---- awakening (#7): also free ----
-    if (this.enabled("awakening")) {
-      for (const d of mine) {
-        const prev = this.mem(d.symbol).previousSessionValue;
-        if (prev === undefined) continue;
-        const s = awakening({ symbol: d.symbol, todayValue: d.sessionValue, previousSessionValue: prev }, t);
-        add(s, d);
-      }
-    }
-
-    // ---- the book detectors: one request each, so choose carefully ----
-    const needsBook =
-      this.enabled("band-approach") ||
-      this.enabled("book-imbalance") ||
-      this.enabled("wall-change") ||
-      this.enabled("uma-flag") ||
-      this.enabled("floor-locked");
-
-    const booksRead: string[] = [];
-    if (needsBook) {
-      // Busiest first: a symbol that did not trade cannot have moved its book meaningfully, and the
-      // budget is better spent where something happened.
-      const candidates = chooseBookCandidates(
-        mine,
-        MAX_BOOK_FETCHES,
-        this.opts.wide ? (this.opts.wideBookSlots ?? DEFAULT_WIDE_BOOK_SLOTS) : 0,
-      );
-      for (const d of candidates) {
-        let book: OrderBook | null = null;
-        try {
-          book = parseOrderBook(await getJson("orderbook", { segments: { symbol: d.symbol } }));
-        } catch (err) {
-          errors.push(`${d.symbol}: ${err instanceof Error ? err.message : String(err)}`);
-          continue;
-        }
-        if (!book) {
-          errors.push(`${d.symbol}: order book did not parse`);
-          continue;
-        }
-        booksRead.push(d.symbol);
-        const m = this.mem(d.symbol);
-
-        if (this.enabled("band-approach")) {
-          const s = bandApproach({ book, recentVolumeShares: d.lots * 100, windowSeconds: d.seconds }, t);
-          add(s, d);
-        }
-        if (this.enabled("book-imbalance")) {
-          const s = bookImbalance({ book, previousPercent: m.lastImbalance ?? null }, t);
-          add(s, d);
-        }
-        if (this.enabled("wall-change") && m.lastBook) {
-          const s = wallChange({ book, previous: m.lastBook, tradedShares: d.lots * 100 }, t);
-          add(s, d);
-        }
-        if (this.enabled("uma-flag")) {
-          const s = umaFlag(book);
-          add(s, d);
-        }
-        if (this.enabled("floor-locked")) {
-          const s = floorLocked(book);
-          add(s, d);
-        }
-
-        m.lastBook = book;
-        m.lastImbalance = topFiveBidPercent(book) ?? undefined;
-      }
-    }
+    // On the first pass every book read is a fresh baseline, so nothing can be differenced yet.
+    const firstPass = this.passes === 0;
+    this.passes++;
+    const noDelta = deltas.length === 0;
 
     // The severity floor lives on the engine (set from the spec in the constructor). Only the money
     // floor and the symbol filter have been applied above.
-    const engine = this.engine.process(signals, now, mine.length || poll.symbolsSeen);
+    const engine = this.engine.process(signals, now, ranked.length || read.snapshot.symbols.size);
 
     return {
-      at: poll.at,
-      symbolsSeen: poll.symbolsSeen,
-      deltas: mine,
+      at: read.snapshot.at,
+      symbolsSeen: read.snapshot.symbols.size,
+      deltas: noDelta ? null : deltas,
+      ...(noDelta && firstPass ? { reason: "first-poll" as const } : {}),
       signals,
       engine,
       booksRead,
       errors,
-      ...(poll.moversOnly !== undefined ? { moversOnly: poll.moversOnly } : {}),
+      ...wideCount,
     };
   }
 

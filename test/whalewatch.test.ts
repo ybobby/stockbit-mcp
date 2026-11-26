@@ -166,6 +166,29 @@ test("repeated failures announce an outage once, then announce recovery", async 
   assert.equal(h.events.filter((e) => e.type === "pass-failed").length, 5);
 });
 
+test("an empty market before the open is logged but never announced as an outage", async () => {
+  // 2026-11-26: top-stock was empty through the 08:45 pre-opening, and the group was told the
+  // watcher could not see the market fifteen minutes before it opened.
+  const empty = () => new Error("top-stock returned no readable rows");
+  const h = harness([empty(), empty(), empty(), empty(), pass()]);
+  let n = 0;
+  h.deps.failureCounts = () => n++ >= 4;
+  await runWhaleWatch(h.deps, { intervalMs: 60_000, failureNotice: 3 });
+  assert.deepEqual(h.sent, [], h.sent.join("\n---\n"));
+  const failed = h.events.filter((e) => e.type === "pass-failed");
+  assert.equal(failed.length, 4);
+  assert.ok(failed.every((e) => e.counted === false));
+});
+
+test("once trading is on, the same failures do count", async () => {
+  const boom = () => new Error("HTTP 502");
+  const h = harness([boom(), boom(), boom(), pass()]);
+  h.deps.failureCounts = () => true;
+  await runWhaleWatch(h.deps, { intervalMs: 60_000, failureNotice: 3 });
+  assert.equal(h.sent.length, 2);
+  assert.match(h.sent[0], /gagal membaca data pasar 3 kali/);
+});
+
 test("a failed Telegram send is recorded, and does not stop the next alert", async () => {
   const e = { emitted: [surge, { ...surge, symbol: "OTHER" }], suppressed: [], marketWide: null };
   const h = harness([pass({ engine: e })], { sendError: "HTTP 429" });

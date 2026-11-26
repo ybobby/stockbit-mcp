@@ -396,6 +396,7 @@ async function watch(): Promise<void> {
       now: () => new Date(),
       sleep: nap,
       inWindow: (now) => flag("always") || isWithinPollingWindow(now),
+      failureCounts: (now) => flag("always") || sessionClock(now).isTradingHours,
       send: async (text) => {
         if (dryRun || !telegram) {
           process.stderr.write(`\n${text}\n\n`);
