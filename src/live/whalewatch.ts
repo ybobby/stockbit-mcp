@@ -37,7 +37,7 @@ import { wibTodayIso } from "../core/sessionclock.js";
 import type { BandarContext } from "./bandar.js";
 import type { PassResult } from "./watcher.js";
 import type { EngineResult } from "./alertengine.js";
-import { numId, rupiahId, type Severity, type Signal, type SignalKind } from "./signals.js";
+import { ANOMALY_KINDS, numId, rupiahId, type Severity, type Signal, type SignalKind } from "./signals.js";
 
 /* ------------------------------------ the clock ------------------------------------ */
 
@@ -66,8 +66,9 @@ export function wibClock(now: Date): string {
 /* ------------------------------------ the words ------------------------------------ */
 
 const MARK: Record<SignalKind, string> = {
-  "value-surge": "🐋",
-  awakening: "🐋",
+  whale: "🐋",
+  "value-surge": "📈",
+  awakening: "🌅",
   "book-imbalance": "📚",
   "wall-change": "🧱",
   "band-approach": "📏",
@@ -134,7 +135,10 @@ export function brokerContextLines(ctx: BandarContext | null): string[] | null {
  */
 export function whaleText(signal: Signal, now: Date, context: string[] | null): string {
   const words = signal.id ?? { headline: signal.headline, detail: signal.detail };
-  const lines = [`${MARK[signal.kind] ?? "•"} ${words.headline}`, ...words.detail.map((d) => `• ${d}`)];
+  // Until a whale is confirmed on the tape, what the screener sees is an anomaly, and the message
+  // says so. The states (locked at ARB, UMA) are facts rather than anomalies and keep their own words.
+  const label = ANOMALY_KINDS.has(signal.kind) ? "Anomali · " : "";
+  const lines = [`${MARK[signal.kind] ?? "•"} ${label}${words.headline}`, ...words.detail.map((d) => `• ${d}`)];
   if (context?.length) lines.push("", ...context);
   lines.push("", `Tingkat: ${SEVERITY_ID[signal.severity]} · ${wibClock(now)} WIB`, "Bukan rekomendasi beli atau jual.");
   return lines.join("\n");
@@ -319,6 +323,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       ...(result.moversOnly !== undefined ? { moversOnly: result.moversOnly } : {}),
       ...(result.ranked ? { ranked: true } : {}),
       booksRead: result.booksRead.length,
+      ...(result.whale ? { whale: result.whale } : {}),
       baseline: result.deltas === null,
       ...(result.reason ? { reason: result.reason } : {}),
       detected: result.signals.length,
@@ -347,6 +352,11 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
         detail: signal.detail,
         brokerContext: context !== null,
       });
+      summary.alertsSent++;
+    }
+
+    for (const text of result.followUps ?? []) {
+      await send(`${text}\n${wibClock(now)} WIB`, { type: "whale-follow", at: now.toISOString(), text });
       summary.alertsSent++;
     }
 

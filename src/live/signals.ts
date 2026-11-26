@@ -28,7 +28,18 @@ export type SignalKind =
   | "wall-change"
   | "awakening"
   | "uma-flag"
-  | "floor-locked";
+  | "floor-locked"
+  /** A large aggressive print confirmed on the running-trade tape. See `prints.ts`. */
+  | "whale";
+
+/** Kinds the screener reports before (or without) a tape confirmation: anomalies, not whales. */
+export const ANOMALY_KINDS: ReadonlySet<SignalKind> = new Set<SignalKind>([
+  "value-surge",
+  "awakening",
+  "book-imbalance",
+  "wall-change",
+  "band-approach",
+]);
 
 export type Severity = "info" | "watch" | "alert" | "critical";
 

@@ -17,6 +17,10 @@ bukan sinyal beli atau jual.
 | 🧱 `wall-change` | Antrian besar di bid atau offer hilang lebih cepat daripada yang bisa dijelaskan oleh transaksi, atau wall baru muncul. |
 | 📏 `band-approach` | Harga sudah menempuh minimal dua pertiga jalan dari penutupan kemarin ke batas ARA/ARB, **dan** sisa antrian menuju batas tinggal sedikit dibanding laju transaksi terakhir. |
 | ⚠️ `uma-flag`, ⛔ `floor-locked` | Saham diberi UMA, atau terkunci di ARB dengan bid kosong. |
+| 🐋 `whale` | **Dikonfirmasi di running trade:** ada transaksi tunggal yang besar untuk ukuran saham itu, atau sapuan satu arah, lengkap dengan sisi agresor (HAKA/HAKI). Lihat bagian "Konfirmasi whale". |
+
+Sinyal 📈 📚 🧱 📏 🌅 adalah **anomali** dan pesannya diawali "Anomali ·". Kalau anomali di satu saham
+lolos konfirmasi, yang dikirim cukup satu pesan 🐋 yang menyebut anomali itu sebagai pemicunya.
 
 Yang **tidak bisa** dilakukan: menyebut siapa pembelinya. IDX menutup kode broker di running trade
 sejak 6 Desember 2021. Blok "Broker context" di bawah alert adalah ringkasan broker **sesi
@@ -103,6 +107,36 @@ Konsekuensinya, saham di slot bergilir dihitung dengan jendela sekitar 5 menit, 
 terlambat sampai 5 menit dan lonjakan nilainya dirata-rata selama 5 menit. Saham di slot tetap tetap
 memakai jendela 1 menit. Baris `pass` di log mencatat `booksRead` dan `ranked: true` pada pass yang
 menyusun ulang antrean.
+
+### Konfirmasi whale
+
+Aktif bawaan di `watch` (matikan dengan `--no-whale`). Setiap menit:
+
+1. **Saham yang memicu anomali** (maksimal 5, yang paling kuat) dicek running trade-nya: transaksi
+   terbaru dengan `sort=desc`, disaring server dengan `minimum_lot`, mundur sampai awal jendela
+   anomali.
+2. **Seluruh pasar disapu**: satu sampai tiga request running trade tanpa kode saham, minimal 1.000 lot,
+   melanjutkan dari nomor transaksi terakhir yang sudah dibaca. Ini menangkap transaksi besar di
+   saham yang tidak ada di antrean 48.
+3. **Saham yang lolos mendapat slot pantau** (maksimal 5): dicek tiap menit, pesan lanjutan dikirim
+   hanya kalau ada transaksi besar baru. Slot ditutup setelah 10 menit sepi atau 30 menit sejak dibuka.
+
+Ambangnya **per saham**, karena Rp100 juta di saham kecil bisa sudah besar sementara Rp1 miliar di
+BBCA belum. Satu transaksi disebut whale kalau melewati dua ukuran sekaligus:
+
+- minimal **0,5% dari rata-rata nilai transaksi harian 20 hari terakhir** saham itu, dengan batas
+  bawah Rp50 juta dan batas atas Rp25 miliar (tanpa data harian: Rp100 juta);
+- minimal **10x rata-rata nilai per transaksi saham itu hari ini**.
+
+Sapuan dihitung kalau transaksi satu sisi dalam 30 detik totalnya minimal 2x ambang dan memakan minimal
+2 level harga. Arah disebut HAKA/HAKI kalau satu sisi memegang minimal 70% nilai transaksi besar;
+kalau tidak, pesannya "transaksi besar dua arah". Transaksi negosiasi dan lelang tidak dihitung.
+Pelakunya tidak bisa diketahui: kode broker di running trade ditutup bursa sejak Desember 2021.
+
+Rata-rata nilai harian dibaca sekali per saham per hari (2 request) dan disimpan di
+`~/.stockbit/whale-adv.json`. Baris `pass` di log mencatat `whale` (request, jumlah konfirmasi, hasil
+sapuan, slot aktif, dan `sweepGap` kalau sapuan pasar kehabisan halaman). Ambang ada di
+`WHALE_DEFAULTS` (`src/live/prints.ts`) dan batas request di `CONFIRM_LIMITS` (`src/live/confirm.ts`).
 
 ### Dari mana angkanya
 

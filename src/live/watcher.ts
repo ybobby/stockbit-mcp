@@ -31,12 +31,15 @@ import {
   valueSurge,
   wallChange,
   topFiveBidPercent,
+  ANOMALY_KINDS,
   DEFAULTS,
   type Signal,
   type SignalKind,
   type Thresholds,
 } from "./signals.js";
 import { AlertEngine, FATIGUE_DEFAULTS, type EngineResult } from "./alertengine.js";
+import { WhaleConfirmer, type Flagged } from "./confirm.js";
+import { followUpText, whaleSignal } from "./prints.js";
 import type { WatchSpec } from "./promptspec.js";
 import type { TradeDelta } from "./tape.js";
 
@@ -143,6 +146,10 @@ export interface PassResult {
   moversOnly?: number;
   /** True on a pass that re-read top-stock and rebuilt the queue. */
   ranked?: boolean;
+  /** Follow-up lines for stocks already announced as whales. Sent as they are, outside the engine. */
+  followUps?: string[];
+  /** What the confirmation stage did this pass, for the log. */
+  whale?: { requests: number; confirmed: number; swept: number; slots: string[]; sweepGap: boolean };
 }
 
 /** Per-symbol memory the detectors need between passes. */
@@ -172,6 +179,12 @@ export interface WatcherOptions {
    * and the market-wide collapse still apply.
    */
   uncapped?: boolean;
+  /**
+   * Confirm anomalies on the running-trade tape and sweep the whole market for large prints, so a
+   * confirmed whale replaces the anomaly that flagged it. Pass a confirmer to control it (tests do);
+   * `true` makes a default one. Off unless asked for, and only when the spec enables `whale`.
+   */
+  whale?: boolean | WhaleConfirmer;
 }
 
 /**
@@ -205,6 +218,7 @@ export function pickThisPass<T extends { symbol: string }>(
 export class SignalWatcher {
   private readonly market: MarketWatcher;
   private readonly engine: AlertEngine;
+  private readonly confirmer: WhaleConfirmer | null;
   private readonly memory = new Map<string, SymbolMemory>();
   private passes = 0;
   /** The ranked queue, when it was built, and where the rotation has got to. */
@@ -226,6 +240,12 @@ export class SignalWatcher {
       ...(opts.uncapped ? { maxPerInterval: Infinity, maxPerSession: Infinity } : {}),
     });
     this.market = new MarketWatcher({ wide: opts.wide === true });
+    this.confirmer =
+      opts.whale && opts.spec.kinds.includes("whale")
+        ? opts.whale instanceof WhaleConfirmer
+          ? opts.whale
+          : new WhaleConfirmer()
+        : null;
   }
 
   private enabled(kind: SignalKind): boolean {
@@ -287,6 +307,7 @@ export class SignalWatcher {
     const signals: Signal[] = [];
     const deltas: TradeDelta[] = [];
     const booksRead: string[] = [];
+    const bookInfo = new Map<string, { price: number; sessionMeanPrint: number | null }>();
     // Every detector reports through this, so a movers-only symbol is labelled whichever one fired.
     const add = (s: Signal | null, c: BookCandidate) => {
       if (s) signals.push(c.source === "movers" ? tagWide(s, c.lists) : s);
@@ -306,6 +327,7 @@ export class SignalWatcher {
       }
       booksRead.push(c.symbol);
       const m = this.mem(c.symbol);
+      bookInfo.set(c.symbol, { price: book.lastPrice, sessionMeanPrint: book.frequency > 0 ? book.value / book.frequency : null });
 
       // The delta against this symbol's previous book, when there is an honest one to take.
       const sample = sampleFromBook(book);
@@ -358,6 +380,39 @@ export class SignalWatcher {
       m.lastImbalance = topFiveBidPercent(book) ?? undefined;
     }
 
+    // ---- whale confirmation: anomalies checked against the tape, plus the market-wide sweep ----
+    let followUps: string[] | undefined;
+    let whale: PassResult["whale"];
+    if (this.confirmer) {
+      const anomalies = signals.filter((sig) => ANOMALY_KINDS.has(sig.kind));
+      const flagged: Flagged[] = [];
+      for (const symbol of new Set(anomalies.map((sig) => sig.symbol))) {
+        const info = bookInfo.get(symbol);
+        if (!info) continue;
+        const mineSignals = anomalies.filter((sig) => sig.symbol === symbol);
+        flagged.push({
+          symbol,
+          price: info.price,
+          sessionMeanPrint: info.sessionMeanPrint,
+          windowSeconds: deltas.find((d) => d.symbol === symbol)?.seconds ?? 0,
+          strength: Math.max(...mineSignals.map((sig) => sig.surprise)),
+        });
+      }
+      const r = await this.confirmer.run(flagged, now);
+      errors.push(...r.errors);
+      for (const [symbol, finding] of r.confirmed) {
+        const triggers = anomalies.filter((sig) => sig.symbol === symbol).map((sig) => sig.id?.headline ?? sig.headline);
+        // The whale REPLACES the anomalies that led to it; the message names them as the trigger.
+        for (let i = signals.length - 1; i >= 0; i--) {
+          if (signals[i].symbol === symbol && ANOMALY_KINDS.has(signals[i].kind)) signals.splice(i, 1);
+        }
+        signals.push(whaleSignal(finding, triggers, "confirm"));
+      }
+      for (const finding of r.swept) signals.push(whaleSignal(finding, [], "sweep"));
+      if (r.followUps.length) followUps = r.followUps.map((f) => followUpText(f.finding, f.minutes));
+      whale = { requests: r.requests, confirmed: r.confirmed.size, swept: r.swept.length, slots: r.slots, sweepGap: r.sweepGap };
+    }
+
     // On the first pass every book read is a fresh baseline, so nothing can be differenced yet.
     const firstPass = this.passes === 0;
     this.passes++;
@@ -372,6 +427,8 @@ export class SignalWatcher {
       at,
       symbolsSeen: this.symbolsSeen,
       ...(ranked ? { ranked: true } : {}),
+      ...(followUps ? { followUps } : {}),
+      ...(whale ? { whale } : {}),
       deltas: noDelta ? null : deltas,
       ...(noDelta && firstPass ? { reason: "first-poll" as const } : {}),
       signals,

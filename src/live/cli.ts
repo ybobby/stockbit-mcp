@@ -58,6 +58,7 @@ export const LIVE_COMMANDS: CommandTable = {
       "--no-context": "skip the previous session's broker summary under each alert",
       "--always": "poll even outside IDX hours (testing only: a shut market reads as flat)",
       "--wide": "also watch Stockbit's top value/volume/frequency movers lists (cheap, high-lot stocks)",
+      "--no-whale": "skip the running-trade confirmation and the market-wide sweep for large prints",
       "--pretty": "indented JSON, for reading by eye",
     },
     positionals: [

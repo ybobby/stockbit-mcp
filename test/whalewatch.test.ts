@@ -119,7 +119,8 @@ test("an emitted signal reaches Telegram once, with its headline and the WIB tim
 
   assert.equal(summary.alertsSent, 1);
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0], /^🐋 TEST: transaksi besar masuk/);
+  // Unconfirmed on the tape, a value surge is an anomaly and says so; 🐋 is kept for confirmed whales.
+  assert.match(h.sent[0], /^📈 Anomali · TEST: transaksi besar masuk/);
   assert.match(h.sent[0], /Rp 2,10 M berpindah tangan/);
   assert.match(h.sent[0], /Tingkat: Penting · 10:01:00 WIB/);
   assert.match(h.sent[0], /Bukan rekomendasi beli atau jual/);

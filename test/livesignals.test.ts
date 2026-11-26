@@ -376,7 +376,8 @@ test("a bare 'M' is refused rather than guessed", () => {
 
 test("an unrecognised prompt enables everything and says so", () => {
   const s = compilePrompt("please do something clever");
-  assert.equal(s.kinds.length, 7);
+  assert.equal(s.kinds.length, 8);
+  assert.ok(s.kinds.includes("whale"));
   assert.match(s.interpretation.join(" "), /full picture rather than silence/);
 });
 

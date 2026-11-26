@@ -392,7 +392,7 @@ async function watch(): Promise<void> {
   const summary = await runWhaleWatch(
     {
       newWatcher: () =>
-        new SignalWatcher({ scope: resolved, spec, elapsedSeconds: () => elapsedTradingSeconds(new Date()), wide: flag("wide"), uncapped: true }),
+        new SignalWatcher({ scope: resolved, spec, elapsedSeconds: () => elapsedTradingSeconds(new Date()), wide: flag("wide"), uncapped: true, whale: !flag("no-whale") }),
       now: () => new Date(),
       sleep: nap,
       inWindow: (now) => flag("always") || isWithinPollingWindow(now),

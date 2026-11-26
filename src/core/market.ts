@@ -631,6 +631,13 @@ export interface RunningTradeOptions {
    *
    * `1` is the default because chronological-with-real-sizes is the only one of the three that
    * answers a question anybody actually asks.
+   *
+   * **Correction, measured 2026-11-26 during the open session:** `sort=desc` alongside `order_by=1`
+   * DOES return the most recent prints, 1-8 seconds behind the clock. `minimum_lot=N` filters
+   * server-side, `action_type=RUNNING_TRADE_ACTION_TYPE_BUY|SELL` keeps one aggressor side, and
+   * `trade_number=X` with `sort=desc` pages backwards from print X. This reader does not send those
+   * yet; the live whale watch does (`src/live/confirm.ts`), and `src/live/prints.ts` records the
+   * measurements.
    */
   orderBy?: 1 | 2 | 3;
   /** Read the grouped view (`runningTradeGroup`) instead of the raw tape. */
