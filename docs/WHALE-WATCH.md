@@ -126,6 +126,8 @@ Aktif bawaan di `watch` (matikan dengan `--no-whale`). Setiap menit:
    saham yang tidak ada di antrean 48.
 3. **Saham yang lolos mendapat slot pantau** (maksimal 5): dicek tiap menit, pesan lanjutan dikirim
    hanya kalau ada transaksi besar baru. Slot ditutup setelah 10 menit sepi atau 30 menit sejak dibuka.
+   Sapuan dan slot mengabaikan transaksi yang lebih tua dari 3 menit, supaya watcher yang dinyalakan
+   saat istirahat siang tidak mengirim transaksi sebelum istirahat sebagai whale (terjadi 27 Nov).
 
 Ambangnya **per saham**, karena Rp100 juta di saham kecil bisa sudah besar sementara Rp1 miliar di
 BBCA belum. Satu transaksi disebut whale kalau melewati dua ukuran sekaligus:

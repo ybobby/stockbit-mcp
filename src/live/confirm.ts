@@ -190,6 +190,12 @@ export interface ConfirmLimits {
   slotMaxMs: number;
   /** How far back a confirmation reads when the anomaly did not say. */
   defaultWindowSeconds: number;
+  /**
+   * The sweep and the slots ignore prints older than this. On 2026-11-27 the watcher was restarted
+   * during the Friday break; the sweep's first read took the newest hundred prints of the market,
+   * which were two hours old, and sent two of them as whales. The tape runs 1-8 s behind.
+   */
+  maxPrintAgeSeconds: number;
 }
 
 export const CONFIRM_LIMITS: ConfirmLimits = {
@@ -203,6 +209,7 @@ export const CONFIRM_LIMITS: ConfirmLimits = {
   slotIdleMs: 10 * 60_000,
   slotMaxMs: 30 * 60_000,
   defaultWindowSeconds: 300,
+  maxPrintAgeSeconds: 180,
 };
 
 /** A stock the screener flagged, with what the confirmation needs to know about it. */
@@ -274,6 +281,7 @@ export class WhaleConfirmer {
   async run(flagged: Flagged[], now: Date = new Date()): Promise<ConfirmResult> {
     const at = now.getTime();
     const nowSec = wibSeconds(now);
+    const fresh = (p: Print): boolean => nowSec - p.seconds <= this.limits.maxPrintAgeSeconds;
     const result: ConfirmResult = { confirmed: new Map(), swept: [], followUps: [], slots: [], requests: 0, errors: [], sweepGap: false };
     const budget = { adv: this.limits.maxAdvFetches };
 
@@ -319,7 +327,7 @@ export class WhaleConfirmer {
           maxPages: 1,
         });
         result.requests += read.pages;
-        const finding = judgePrints(slot.symbol, read.prints, th, this.t);
+        const finding = judgePrints(slot.symbol, read.prints.filter(fresh), th, this.t);
         if (read.prints.length) slot.lastTradeNumber = Math.max(slot.lastTradeNumber, ...read.prints.map((p) => p.tradeNumber));
         if (finding) {
           result.followUps.push({ finding, minutes: Math.max(1, Math.round((at - slot.lastBigAt) / 60_000)) });
@@ -346,6 +354,7 @@ export class WhaleConfirmer {
         // A cheap pre-filter before any ADV is spent: nothing under the absolute floor can qualify.
         const bySymbol = new Map<string, Print[]>();
         for (const p of read.prints) {
+          if (!fresh(p)) continue; // the cursor above has already moved past it
           if (p.value < lowestFloor(this.t) * this.t.fillShare) continue;
           if (result.confirmed.has(p.symbol) || this.slots.has(p.symbol)) continue;
           (bySymbol.get(p.symbol) ?? bySymbol.set(p.symbol, []).get(p.symbol)!).push(p);

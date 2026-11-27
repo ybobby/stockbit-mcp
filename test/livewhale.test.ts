@@ -316,6 +316,14 @@ test("the market-wide sweep finds a whale in a stock nobody flagged, judged by t
   assert.equal(new URLSearchParams(tapeUrls[0]).get("minimum_lot"), "1000");
 });
 
+test("a watcher started during the break does not send the prints from before the break", async () => {
+  const c = new WhaleConfirmer(new FixedAdv({ KECL: 1_000_000_000 }), WHALE_DEFAULTS, CONFIRM_LIMITS, true);
+  tape = { "": [row("KECL", "11:29:38", 100, 15_000, "sell")] }; // Rp150 jt, two hours before
+  const r = await c.run([], new Date("2026-11-27T06:29:11Z")); // 13:29:11 WIB, Friday break
+  assert.deepEqual(r.swept, [], "a whale two hours old is not news");
+  assert.deepEqual(r.slots, []);
+});
+
 test("more flagged stocks than the limit: the strongest are confirmed", async () => {
   const fixed = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`S${i}`, 1_000_000_000]));
   const c = new WhaleConfirmer(new FixedAdv(fixed), WHALE_DEFAULTS, CONFIRM_LIMITS, false);
