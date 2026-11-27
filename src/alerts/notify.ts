@@ -240,12 +240,16 @@ export function telegramTargetFromEnv(env: NodeJS.ProcessEnv = process.env): Tel
  * Plain text with no `parse_mode`: an alert name is user-supplied, and under Markdown or HTML an
  * unbalanced `*` or `<` makes Telegram reject the whole message. The alert that fires is exactly
  * the one you cannot afford to lose to a formatting error.
+ *
+ * `parseMode: "HTML"` is for a caller that composed and escaped the markup itself — whale watch,
+ * through `telegramHtml` — and that resends plain text if Telegram still answers 400.
  */
 export async function postTelegram(
   target: TelegramTarget,
   text: string,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 8000,
+  parseMode?: "HTML",
 ): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -253,7 +257,7 @@ export async function postTelegram(
     const res = await fetchImpl(`https://api.telegram.org/bot${target.botToken}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: target.chatId, text, disable_web_page_preview: true }),
+      body: JSON.stringify({ chat_id: target.chatId, text, disable_web_page_preview: true, ...(parseMode ? { parse_mode: parseMode } : {}) }),
       redirect: "manual",
       signal: controller.signal,
     });

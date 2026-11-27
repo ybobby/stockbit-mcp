@@ -44,6 +44,12 @@ export interface FatigueConfig {
    * a 15-minute cooldown it was re-announced every quarter hour. Added 2026-11-26.
    */
   oncePerSession?: SignalKind[];
+  /**
+   * Kinds that are not held back by an EARLIER signal of a different kind on the same symbol. A
+   * whale is usually confirmed right after the anomaly that flagged it; the cross-kind cooldown
+   * would otherwise silence the confirmation in favour of the weaker claim.
+   */
+  ignoreCrossKind?: SignalKind[];
 }
 
 export const FATIGUE_DEFAULTS: FatigueConfig = {
@@ -58,6 +64,7 @@ export const FATIGUE_DEFAULTS: FatigueConfig = {
   marketWideShare: 0.4,
   floor: "watch",
   oncePerSession: ["floor-locked"],
+  ignoreCrossKind: ["whale"],
 };
 
 const RANK: Record<Severity, number> = { info: 0, watch: 1, alert: 2, critical: 3 };
@@ -252,6 +259,7 @@ export class AlertEngine {
           continue;
         }
       } else if (
+        !this.config.ignoreCrossKind?.includes(s.kind) &&
         sameSymbol &&
         sameSymbol.kind !== s.kind &&
         nowMs - sameSymbol.at < this.config.cooldownCrossKindMs &&

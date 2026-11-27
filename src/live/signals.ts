@@ -28,7 +28,18 @@ export type SignalKind =
   | "wall-change"
   | "awakening"
   | "uma-flag"
-  | "floor-locked";
+  | "floor-locked"
+  /** A large aggressive print confirmed on the running-trade tape. See `prints.ts`. */
+  | "whale";
+
+/** Kinds the screener reports before (or without) a tape confirmation: anomalies, not whales. */
+export const ANOMALY_KINDS: ReadonlySet<SignalKind> = new Set<SignalKind>([
+  "value-surge",
+  "awakening",
+  "book-imbalance",
+  "wall-change",
+  "band-approach",
+]);
 
 export type Severity = "info" | "watch" | "alert" | "critical";
 
@@ -88,6 +99,8 @@ export interface Thresholds {
   imbalanceHigh: number;
   /** #3 — and at or below which it is one-sided the other way. */
   imbalanceLow: number;
+  /** #3 — consecutive readings of the same stock, this one included, that must all be one-sided. */
+  imbalancePolls?: number;
   /** #6 — a level must lose at least this fraction of its size to count as withdrawn. */
   wallShrink: number;
   /** #6 — ...and the trading that happened must explain less than this fraction of the loss. */
@@ -124,6 +137,8 @@ export const DEFAULTS: Thresholds = {
   bandProgressMin: 2 / 3,
   imbalanceHigh: 75,
   imbalanceLow: 25,
+  // Owner, 2026-11-26: two readings sent 54 imbalances in one afternoon, the noisiest anomaly.
+  imbalancePolls: 3,
   wallShrink: 0.5,
   wallUnexplained: 0.5,
   wallMinValue: 1_000_000_000,
@@ -343,27 +358,33 @@ export function topFiveBidPercent(book: OrderBook): number | null {
 
 export interface ImbalanceInput {
   book: OrderBook;
-  /** The same measurement from the previous poll. Null on the first poll. */
-  previousPercent: number | null;
+  /**
+   * The same measurement from this stock's earlier readings, oldest first, kept only while the
+   * readings ran without a gap. Empty on the first.
+   */
+  previousPercents: number[];
 }
 
 /**
- * One-sided depth at the top of the book, held across two polls.
+ * One-sided depth at the top of the book, held across `imbalancePolls` readings in a row (3).
  *
  * Deliberately NOT the API's `bid_percent`. On the book this was written against that field read 50.1
  * — "balanced" — while the top five levels were 9.9% bid. It is summing whatever the ladder happens
  * to show, and the two sides are not shown to equal depth.
  *
- * The two-poll requirement is the whole noise filter. A single crossing is queue churn; depth that is
- * still one-sided a poll later is a standing condition.
+ * The run of readings is the whole noise filter. A single crossing is queue churn; depth that is
+ * still one-sided readings later is a standing condition. A stock in the rotation is read about once
+ * every five minutes, so for it three readings span roughly ten minutes.
  */
 export function bookImbalance(input: ImbalanceInput, t: Thresholds = DEFAULTS): Signal | null {
-  const { book, previousPercent } = input;
-  const pct = topFiveBidPercent(book);
-  if (pct === null || previousPercent === null) return null;
+  const pct = topFiveBidPercent(input.book);
+  const book = input.book;
+  const need = Math.max(2, t.imbalancePolls ?? 3) - 1;
+  if (pct === null || input.previousPercents.length < need) return null;
+  const earlier = input.previousPercents.slice(-need);
 
-  const bidHeavy = pct >= t.imbalanceHigh && previousPercent >= t.imbalanceHigh;
-  const offerHeavy = pct <= t.imbalanceLow && previousPercent <= t.imbalanceLow;
+  const bidHeavy = pct >= t.imbalanceHigh && earlier.every((p) => p >= t.imbalanceHigh);
+  const offerHeavy = pct <= t.imbalanceLow && earlier.every((p) => p <= t.imbalanceLow);
   if (!bidHeavy && !offerHeavy) return null;
 
   const distance = bidHeavy ? pct - t.imbalanceHigh : t.imbalanceLow - pct;
@@ -375,9 +396,9 @@ export function bookImbalance(input: ImbalanceInput, t: Thresholds = DEFAULTS): 
     symbol: book.symbol,
     severity: severityFor(surprise),
     surprise,
-    headline: `${book.symbol}: top-5 book ${pct.toFixed(0)}% ${bidHeavy ? "bid" : "offer"}-heavy, two polls running`,
+    headline: `${book.symbol}: top-5 book ${pct.toFixed(0)}% ${bidHeavy ? "bid" : "offer"}-heavy, ${earlier.length + 1} readings running`,
     detail: [
-      `Top-5 bid share ${previousPercent.toFixed(0)}% then ${pct.toFixed(0)}%.`,
+      `Top-5 bid share ${[...earlier, pct].map((p) => `${p.toFixed(0)}%`).join(" then ")}.`,
       `The API's own bid_percent reads ${book.bid.length} bid levels against ${book.offer.length} offer levels, so it is not comparable — this is the top five of each.`,
       "Queue size is an intention, not a transaction, and can be withdrawn at any moment.",
     ],
@@ -389,9 +410,9 @@ export function bookImbalance(input: ImbalanceInput, t: Thresholds = DEFAULTS): 
         : `${book.symbol}: antrean jual jauh lebih tebal dari antrean beli`,
       detail: [
         bidHeavy
-          ? `Di 5 level teratas order book, ${numId(pct)}% antrean adalah beli (bid). Pengecekan sebelumnya ${numId(previousPercent)}%.`
-          : `Di 5 level teratas order book, antrean beli (bid) hanya ${numId(pct)}%, sisanya antrean jual. Pengecekan sebelumnya ${numId(previousPercent)}%.`,
-        "Kondisi ini bertahan di dua pengecekan berturut-turut.",
+          ? `Di 5 level teratas order book, ${numId(pct)}% antrean adalah beli (bid).`
+          : `Di 5 level teratas order book, antrean beli (bid) hanya ${numId(pct)}%, sisanya antrean jual.`,
+        `Kondisi ini bertahan di ${numId(earlier.length + 1)} pengecekan berturut-turut (${[...earlier, pct].map((p) => `${numId(p)}%`).join(", ")} beli).`,
         "Antrean belum tentu jadi transaksi dan bisa ditarik kapan saja.",
       ],
     },

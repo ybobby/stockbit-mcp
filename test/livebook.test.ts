@@ -253,6 +253,16 @@ test("top-stock is read once per re-rank, not every pass", async () => {
   assert.equal(r.ranked, true);
 });
 
+test("an AlfeySaham position ranked below the queue is pinned into it", async () => {
+  const w = new SignalWatcher({ scope: ALL, spec: compilePrompt(""), elapsedSeconds: () => 3 * 3600, pinned: () => ["s59"] });
+  const t0 = new Date("2026-11-26T03:00:00Z").getTime();
+  topStock = q(60).map((x, i) => topRow(x.symbol, 1e10 - i, 10));
+  books = Object.fromEntries(q(60).map((x) => [x.symbol, book(x.symbol, 1e10, 1_000, 1e7)]));
+  for (let i = 0; i < 5; i++) await w.pass(new Date(t0 + i * 60_000));
+  assert.ok(bookRequests.includes("S59"), "ranked 60th of 60, still read");
+  assert.equal(new Set(bookRequests).size, 48, "the queue stays 48");
+});
+
 test("a rotating symbol read five minutes later still gets its delta", async () => {
   const w = watcher();
   const t0 = new Date("2026-11-26T03:00:00Z").getTime();

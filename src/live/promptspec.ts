@@ -46,6 +46,7 @@ const ALL_KINDS: SignalKind[] = [
   "awakening",
   "uma-flag",
   "floor-locked",
+  "whale",
 ];
 
 /**

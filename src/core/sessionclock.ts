@@ -243,3 +243,17 @@ export function isWithinPollingWindow(now: Date): boolean {
   const minutes = wib.getUTCHours() * 60 + wib.getUTCMinutes();
   return minutes >= at(8, 45) && minutes <= at(16, 15);
 }
+
+/**
+ * The window whale watch reads and alerts in: 08:45 up to, not including, 16:00 WIB.
+ *
+ * Narrower than `isWithinPollingWindow` at the close. On 2026-11-26 two order-book imbalances went
+ * to the group at 16:15, after the exchange had shut, and the owner asked for nothing after 16:00.
+ */
+export function isWithinWhaleWindow(now: Date): boolean {
+  const wib = shiftToWib(now);
+  const day = wib.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const minutes = wib.getUTCHours() * 60 + wib.getUTCMinutes();
+  return minutes >= at(8, 45) && minutes < at(16, 0);
+}
