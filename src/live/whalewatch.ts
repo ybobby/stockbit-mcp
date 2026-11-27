@@ -169,6 +169,23 @@ export function brokerContextLines(ctx: BandarContext | null): string[] | null {
 }
 
 /**
+ * The broker summary of the last COMPLETED session, for the context block under an alert.
+ *
+ * Measured during the session of 2026-11-27: `LATEST` returned 26 Nov (the last completed session)
+ * and `YESTERDAY` returned 25 Nov. The watcher had asked for `YESTERDAY` on the belief that
+ * `LATEST` meant today, so every alert carried data a day older than it said. `LATEST` is asked
+ * first; only if it turns out to be today (after the close) or unreadable is `YESTERDAY` used.
+ */
+export async function lastSessionBroker(
+  today: string,
+  read: (period: "LATEST" | "YESTERDAY") => Promise<BandarContext | null>,
+): Promise<BandarContext | null> {
+  const latest = await read("LATEST");
+  if (latest && !latest.degraded && latest.to !== today) return latest;
+  return read("YESTERDAY");
+}
+
+/**
  * One alert as a message, in plain Indonesian. Plain text here; `telegramHtml` escapes it and adds
  * the bold and colour marks at the send. Falls back to the English text for a signal that carries no
  * Indonesian.

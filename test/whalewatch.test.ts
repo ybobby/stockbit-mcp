@@ -21,6 +21,7 @@ import {
   telegramHtml,
   whaleText,
   brokerContextLines,
+  lastSessionBroker,
   elapsedTradingSeconds,
   wibClock,
   type WhaleWatchDeps,
@@ -327,4 +328,20 @@ test("a follow-up gets the AlfeySaham label under its headline, and a failed lab
   await runWhaleWatch(h.deps, { intervalMs: 60_000 });
   assert.equal(h.sent[0], "<b>🐋 AIMS lanjutan: beli (🟢 HAKA)</b>\n<b>📋 Kandidat per 26 Nov 2026</b>\n💰 Rp 1 jt lagi");
   assert.ok(h.events.some((e) => e.type === "labels-failed"));
+});
+
+test("the broker context is the last completed session: LATEST, unless LATEST is already today", async () => {
+  const asked: string[] = [];
+  const day = (d: string) => ({ ...ctx(), from: d, to: d });
+  const during = await lastSessionBroker("2026-11-27", async (p) => {
+    asked.push(p);
+    return p === "LATEST" ? day("2026-11-26") : day("2026-11-25");
+  });
+  assert.equal(during?.to, "2026-11-26", "during the session LATEST is yesterday's session, not two days back");
+  assert.deepEqual(asked, ["LATEST"]);
+
+  const afterClose = await lastSessionBroker("2026-11-27", async (p) => (p === "LATEST" ? day("2026-11-27") : day("2026-11-26")));
+  assert.equal(afterClose?.to, "2026-11-26");
+  const degraded = await lastSessionBroker("2026-11-27", async (p) => (p === "LATEST" ? { ...day("2026-11-26"), degraded: true } : day("2026-11-25")));
+  assert.equal(degraded?.to, "2026-11-25");
 });

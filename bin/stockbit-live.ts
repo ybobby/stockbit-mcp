@@ -33,7 +33,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stockbitDir } from "../src/paths.js";
-import { sessionClock, isWithinPollingWindow, isWithinWhaleWindow } from "../src/core/sessionclock.js";
+import { sessionClock, isWithinPollingWindow, isWithinWhaleWindow, wibTodayIso } from "../src/core/sessionclock.js";
 import { CliParseError, formatUsage, gateCommandLine, isHelpToken, isVersionToken } from "../src/cliargs.js";
 import { VERSION } from "../src/version.js";
 import { LIVE_BIN, LIVE_COMMANDS, LIVE_EPILOGUE } from "../src/live/cli.js";
@@ -51,6 +51,7 @@ import { getBrokerSummary } from "../src/core/marketdetectors.js";
 import { telegramTargetFromEnv, postTelegram } from "../src/alerts/notify.js";
 import {
   brokerContextLines,
+  lastSessionBroker,
   elapsedTradingSeconds,
   logWhaleEvent,
   runWhaleWatch,
@@ -454,10 +455,12 @@ async function watch(): Promise<void> {
       brokerContext: flag("no-context")
         ? undefined
         : async (symbol) => {
-            // YESTERDAY, not LATEST: during an open session LATEST is today, and today's broker rows
-            // are empty by exchange rule.
-            const raw = await getBrokerSummary({ symbol, period: "YESTERDAY" });
-            return brokerContextLines(readBandar({ ...(raw as object), symbol }));
+            // The last completed session: LATEST during the session, YESTERDAY only if LATEST is
+            // already today. See lastSessionBroker.
+            const ctx = await lastSessionBroker(wibTodayIso(new Date()), async (period) =>
+              readBandar({ ...((await getBrokerSummary({ symbol, period })) as object), symbol }),
+            );
+            return brokerContextLines(ctx);
           },
       record: (event) => {
         const line = { ...event, ...(dryRun ? { dryRun: true } : {}) };
