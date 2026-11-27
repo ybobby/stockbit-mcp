@@ -37,7 +37,7 @@ import { wibTodayIso } from "../core/sessionclock.js";
 import type { BandarContext } from "./bandar.js";
 import type { PassResult } from "./watcher.js";
 import type { EngineResult } from "./alertengine.js";
-import { numId, rupiahId, type Severity, type Signal, type SignalKind } from "./signals.js";
+import { ANOMALY_KINDS, numId, rupiahId, type Severity, type Signal, type SignalKind } from "./signals.js";
 
 /* ------------------------------------ the clock ------------------------------------ */
 
@@ -66,8 +66,9 @@ export function wibClock(now: Date): string {
 /* ------------------------------------ the words ------------------------------------ */
 
 const MARK: Record<SignalKind, string> = {
-  "value-surge": "🐋",
-  awakening: "🐋",
+  whale: "🐋",
+  "value-surge": "📈",
+  awakening: "🌅",
   "book-imbalance": "📚",
   "wall-change": "🧱",
   "band-approach": "📏",
@@ -104,6 +105,46 @@ function tanggal(iso: string): string {
   return `${Number(m[3])} ${bulan ?? m[2]} ${m[1]}`;
 }
 
+const DISCLAIMER = "Bukan rekomendasi beli atau jual.";
+
+/** A square of a different colour per level. Telegram cannot colour text, so the colour is a mark. */
+const SEVERITY_MARK: Record<Severity, string> = {
+  info: "⬜",
+  watch: "🟨",
+  alert: "🟧",
+  critical: "🟥",
+};
+
+/**
+ * A plain message as Telegram HTML: everything escaped, then the few words the owner asked to stand
+ * out made bold with a coloured mark — the level after "Level:", HAKA green, HAKI red.
+ *
+ * Done once, at the send, so every composer above keeps writing plain text and nothing it carries
+ * (a symbol, a headline, an error message) can open a tag. `parse_mode: "HTML"` only needs `&`, `<`
+ * and `>` escaped.
+ */
+export function telegramHtml(text: string): string {
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const lines = escaped.split("\n");
+  // An alert or follow-up (two lines or more) gets its headline in bold; a one-line notice stays plain.
+  const boldHeadline = lines.length >= 2;
+  return lines
+    .map((line, i) => {
+      if (i === 0 && boldHeadline) {
+        // Already inside <b>, so the aggressor gets its mark but no second tag.
+        return `<b>${line.replace(/\bHAKA\b/g, "🟢 HAKA").replace(/\bHAKI\b/g, "🔴 HAKI")}</b>`;
+      }
+      if (line === DISCLAIMER) return `<i>${line}</i>`;
+      // The AlfeySaham label (alfeylist.ts) stands out under the headline.
+      if (/^(📌|📋) /u.test(line)) return `<b>${line}</b>`;
+      for (const sev of Object.keys(SEVERITY_ID) as Severity[]) {
+        if (line === `Level: ${SEVERITY_ID[sev]}`) return `Level: ${SEVERITY_MARK[sev]} <b>${SEVERITY_ID[sev]}</b>`;
+      }
+      return line.replace(/\bHAKA\b/g, "🟢 <b>HAKA</b>").replace(/\bHAKI\b/g, "🔴 <b>HAKI</b>");
+    })
+    .join("\n");
+}
+
 /**
  * The previous session's broker summary, in a few plain Indonesian lines.
  *
@@ -128,20 +169,31 @@ export function brokerContextLines(ctx: BandarContext | null): string[] | null {
 }
 
 /**
- * One alert as a Telegram message, in plain Indonesian. Plain text — `postTelegram` sends no
- * `parse_mode`, so nothing in a headline can make Telegram reject the message. Falls back to the
- * English text for a signal that carries no Indonesian.
+ * One alert as a message, in plain Indonesian. Plain text here; `telegramHtml` escapes it and adds
+ * the bold and colour marks at the send. Falls back to the English text for a signal that carries no
+ * Indonesian.
  */
-export function whaleText(signal: Signal, now: Date, context: string[] | null): string {
+export function whaleText(signal: Signal, now: Date, context: string[] | null, labelLine: string | null = null): string {
   const words = signal.id ?? { headline: signal.headline, detail: signal.detail };
-  const lines = [`${MARK[signal.kind] ?? "•"} ${words.headline}`, ...words.detail.map((d) => `• ${d}`)];
+  // Until a whale is confirmed on the tape, what the screener sees is an anomaly, and the message
+  // says so. The states (locked at ARB, UMA) are facts rather than anomalies and keep their own words.
+  const label = ANOMALY_KINDS.has(signal.kind) ? "Anomali · " : "";
+  const alfey = labelLine;
+  // A detail line that already leads with its own mark (the whale layout) gets no bullet.
+  const lines = [
+    `${MARK[signal.kind] ?? "•"} ${label}${words.headline}`,
+    ...(alfey ? [alfey] : []),
+    "",
+    ...words.detail.map((d) => (/^\p{Extended_Pictographic}/u.test(d) ? d : `• ${d}`)),
+  ];
   if (context?.length) lines.push("", ...context);
-  lines.push("", `Tingkat: ${SEVERITY_ID[signal.severity]} · ${wibClock(now)} WIB`, "Bukan rekomendasi beli atau jual.");
+  // No clock: Telegram stamps every message already (owner, 2026-11-26).
+  lines.push("", `Level: ${SEVERITY_ID[signal.severity]}`, DISCLAIMER);
   return lines.join("\n");
 }
 
 export function marketWideText(mw: NonNullable<EngineResult["marketWide"]>, now: Date): string {
-  return `📈 Sinyal yang sama muncul serentak di ${mw.count} dari ${mw.universe} saham.\nIni pergerakan pasar secara umum, bukan satu saham tertentu, jadi tidak dikirim per saham.\n\n${wibClock(now)} WIB`;
+  return `📈 Sinyal yang sama muncul serentak di ${mw.count} dari ${mw.universe} saham.\nIni pergerakan pasar secara umum, bukan satu saham tertentu, jadi tidak dikirim per saham.`;
 }
 
 /* ------------------------------------ the log ------------------------------------ */
@@ -168,7 +220,15 @@ export interface WhaleWatchDeps {
   sleep(ms: number): Promise<void>;
   /** Whether IDX is inside the polling window. */
   inWindow(now: Date): boolean;
-  /** Send one message. Resolves to an error string, or null when delivered. */
+  /**
+   * Whether a failed pass at this moment counts toward the outage notice. Absent means always.
+   *
+   * The polling window opens at 08:45 for the pre-opening auction, when top-stock is legitimately
+   * empty. On 2026-11-26 that emptiness was counted as three failures in a row, and the group was
+   * told the watcher could not see the market a quarter of an hour before the market opened.
+   */
+  failureCounts?(now: Date): boolean;
+  /** Send one message, already Telegram HTML (see `telegramHtml`). An error string, or null when delivered. */
   send(text: string): Promise<string | null>;
   /** Yesterday's broker context for a symbol, or null. May throw; a failure costs only the block. */
   brokerContext?(symbol: string): Promise<string[] | null>;
@@ -178,6 +238,15 @@ export interface WhaleWatchDeps {
   stopped(): boolean;
   /** True when the error means the Stockbit session is gone and polling cannot recover. */
   isAuthError(err: unknown): boolean;
+  /** The AlfeySaham label for a stock ("Posisi Aktif AlfeySaham", "Kandidat per ..."), or null. */
+  labelFor?(symbol: string): string | null;
+  /** Bring the label list up to date before a pass. An error string goes to the log, nothing else. */
+  refreshLabels?(now: Date): Promise<string | null>;
+  /**
+   * Remembers, across restarts, that the group was told whale watch went into maintenance, so the
+   * first good pass after the restart can say it is back. Absent means no "back" message.
+   */
+  maintenance?: { pending(): boolean; set(): void; clear(): void };
 }
 
 export interface WhaleWatchOptions {
@@ -217,7 +286,7 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
   const contextCache = new Map<string, string[] | null>();
 
   const send = async (text: string, event: Record<string, unknown>): Promise<void> => {
-    const error = await deps.send(text);
+    const error = await deps.send(telegramHtml(text));
     if (error) summary.sendFailures++;
     deps.record({ ...event, delivered: error ? "failed" : "sent", ...(error ? { deliveryError: error } : {}) });
   };
@@ -264,24 +333,36 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
     summary.passes++;
     let result: PassResult;
     try {
+      if (deps.refreshLabels) {
+        const labelError = await deps.refreshLabels(now);
+        if (labelError) deps.record({ type: "labels-failed", at: now.toISOString(), error: labelError });
+      }
       result = await watcher.pass(now);
     } catch (err) {
       if (deps.isAuthError(err)) {
         // Polling cannot fix this, and a loop that kept trying would sit silently forever.
+        // The group gets a neutral maintenance notice (owner, 2026-11-26): no login, no provider, no
+        // admin chore. The operator's terminal and log line carry the actual fix.
         await send(
-          `⛔ Whale watch berhenti: sesi login ke sumber data sudah tidak berlaku.\nAdmin perlu login ulang, lalu menjalankan whale watch lagi.\n${wibClock(now)} WIB`,
-          // The group text names no provider; the operator's log line carries the actual fix.
+          `🛠️ Whale watch sedang dalam mode maintenance. Alert berhenti sementara dan akan aktif lagi setelah ada pemberitahuan berikutnya.`,
           { type: "stopped-auth", at: now.toISOString(), fix: "stockbit-auth login" },
         );
+        deps.maintenance?.set();
         summary.ended = "auth";
         return summary;
+      }
+      if (deps.failureCounts && !deps.failureCounts(now)) {
+        // Outside continuous trading an empty market is expected. Logged, not counted.
+        deps.record({ type: "pass-failed", at: now.toISOString(), counted: false, error: message(err) });
+        await deps.sleep(opts.intervalMs);
+        continue;
       }
       failures++;
       deps.record({ type: "pass-failed", at: now.toISOString(), consecutive: failures, error: message(err) });
       if (failures === failureNotice && !announcedOutage) {
         announcedOutage = true;
         await send(
-          `⚠️ Whale watch gagal membaca data pasar ${failures} kali berturut-turut. Kalau setelah ini sepi, itu BUKAN berarti pasar sepi.\n${wibClock(now)} WIB`,
+          `⚠️ Whale watch gagal membaca data pasar ${failures} kali berturut-turut. Kalau setelah ini sepi, itu BUKAN berarti pasar sepi.`,
           { type: "outage", at: now.toISOString(), consecutive: failures },
         );
       }
@@ -289,8 +370,16 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       continue;
     }
 
+    if (deps.maintenance?.pending()) {
+      await send(`✅ Whale watch aktif kembali. Alert berjalan seperti biasa.`, {
+        type: "maintenance-ended",
+        at: now.toISOString(),
+      });
+      deps.maintenance.clear();
+    }
+
     if (announcedOutage) {
-      await send(`✅ Whale watch sudah bisa membaca data pasar lagi.\n${wibClock(now)} WIB`, {
+      await send(`✅ Whale watch sudah bisa membaca data pasar lagi.`, {
         type: "recovered",
         at: now.toISOString(),
       });
@@ -303,6 +392,9 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
       at: now.toISOString(),
       symbolsSeen: result.symbolsSeen,
       ...(result.moversOnly !== undefined ? { moversOnly: result.moversOnly } : {}),
+      ...(result.ranked ? { ranked: true } : {}),
+      booksRead: result.booksRead.length,
+      ...(result.whale ? { whale: result.whale } : {}),
       baseline: result.deltas === null,
       ...(result.reason ? { reason: result.reason } : {}),
       detected: result.signals.length,
@@ -320,7 +412,8 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
 
     for (const signal of result.engine?.emitted ?? []) {
       const context = await contextFor(signal.symbol);
-      await send(whaleText(signal, now, context), {
+      const alfey = deps.labelFor?.(signal.symbol) ?? null;
+      await send(whaleText(signal, now, context, alfey), {
         type: "alert",
         at: now.toISOString(),
         symbol: signal.symbol,
@@ -330,7 +423,17 @@ export async function runWhaleWatch(deps: WhaleWatchDeps, opts: WhaleWatchOption
         headline: signal.headline,
         detail: signal.detail,
         brokerContext: context !== null,
+        ...(alfey ? { label: alfey } : {}),
       });
+      summary.alertsSent++;
+    }
+
+    for (const { symbol, text } of result.followUps ?? []) {
+      const alfey = deps.labelFor?.(symbol) ?? null;
+      // The label goes under the follow-up's headline, as it does on a full alert.
+      const [head, ...rest] = text.split("\n");
+      const body = alfey ? [head, alfey, ...rest].join("\n") : text;
+      await send(body, { type: "whale-follow", at: now.toISOString(), symbol, text: body });
       summary.alertsSent++;
     }
 

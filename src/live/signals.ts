@@ -28,7 +28,18 @@ export type SignalKind =
   | "wall-change"
   | "awakening"
   | "uma-flag"
-  | "floor-locked";
+  | "floor-locked"
+  /** A large aggressive print confirmed on the running-trade tape. See `prints.ts`. */
+  | "whale";
+
+/** Kinds the screener reports before (or without) a tape confirmation: anomalies, not whales. */
+export const ANOMALY_KINDS: ReadonlySet<SignalKind> = new Set<SignalKind>([
+  "value-surge",
+  "awakening",
+  "book-imbalance",
+  "wall-change",
+  "band-approach",
+]);
 
 export type Severity = "info" | "watch" | "alert" | "critical";
 
@@ -78,14 +89,28 @@ export interface Thresholds {
   minSessionTrades: number;
   /** #2 — fire when remaining depth to the band is under this multiple of recent consumption. */
   bandDepthMultiple: number;
+  /**
+   * #2 — and only once price has covered at least this share of the way from the previous close to
+   * the band. Without it a stock 2% up with a thin ladder above read as "approaching ARA" while
+   * 31.9% short of it (IRSX, 2026-11-26). Absent means no price gate.
+   */
+  bandProgressMin?: number;
   /** #3 — top-5 bid share, as a percentage, at or above which the book is one-sided. */
   imbalanceHigh: number;
   /** #3 — and at or below which it is one-sided the other way. */
   imbalanceLow: number;
+  /** #3 — consecutive readings of the same stock, this one included, that must all be one-sided. */
+  imbalancePolls?: number;
   /** #6 — a level must lose at least this fraction of its size to count as withdrawn. */
   wallShrink: number;
   /** #6 — ...and the trading that happened must explain less than this fraction of the loss. */
   wallUnexplained: number;
+  /**
+   * #6 — the size that left or arrived, in RUPIAH (shares × price), must reach this. Absent means no
+   * floor. Added 2026-11-26 after the first full morning sent 20 wall-change alerts out of 25,
+   * several for levels worth a few hundred million rupiah on cheap stocks.
+   */
+  wallMinValue?: number;
   /** #7 — today's value versus the previous session's total. */
   awakeningMultiple: number;
 }
@@ -109,10 +134,14 @@ export const DEFAULTS: Thresholds = {
   minWindowTrades: 3,
   minSessionTrades: 200,
   bandDepthMultiple: 3,
+  bandProgressMin: 2 / 3,
   imbalanceHigh: 75,
   imbalanceLow: 25,
+  // Owner, 2026-11-26: two readings sent 54 imbalances in one afternoon, the noisiest anomaly.
+  imbalancePolls: 3,
   wallShrink: 0.5,
   wallUnexplained: 0.5,
+  wallMinValue: 1_000_000_000,
   awakeningMultiple: 3,
 };
 
@@ -274,6 +303,11 @@ export function bandApproach(input: BandInput, t: Thresholds = DEFAULTS): Signal
   const edge = side === "ara" ? book.ara : book.arb;
   if (!remaining || edge === null || remaining.shares <= 0) return null;
 
+  // How far along the road from yesterday's close to the band the price already is, 0..1.
+  const road = edge - book.previousClose;
+  const progress = road !== 0 ? (book.lastPrice - book.previousClose) / road : 0;
+  if (t.bandProgressMin !== undefined && progress < t.bandProgressMin) return null;
+
   const ratio = remaining.shares / recentVolumeShares;
   if (ratio > t.bandDepthMultiple) return null;
 
@@ -288,7 +322,7 @@ export function bandApproach(input: BandInput, t: Thresholds = DEFAULTS): Signal
     surprise,
     headline: `${book.symbol}: ${toLots(remaining.shares).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots left before ${side.toUpperCase()} at ${edge}`,
     detail: [
-      `Price ${book.lastPrice}, ${Math.abs(pct).toFixed(1)}% from the band.`,
+      `Price ${book.lastPrice}, ${Math.round(progress * 100)}% of the way from the previous close, ${Math.abs(pct).toFixed(1)}% from the band.`,
       `At the last ${Math.round(windowSeconds)}s of pace that is about ${minutes.toFixed(1)} minute(s) of supply.`,
       remaining.complete
         ? "The ladder reaches the band, so this is the full remaining depth."
@@ -299,7 +333,7 @@ export function bandApproach(input: BandInput, t: Thresholds = DEFAULTS): Signal
     id: {
       headline: `${book.symbol}: mendekati ${side.toUpperCase()} ${numId(edge)}`,
       detail: [
-        `Harga ${numId(book.lastPrice)}, tinggal ${numId(Math.abs(pct), 1)}% lagi ke batas ${side.toUpperCase()}.`,
+        `Harga ${numId(book.lastPrice)}, sudah ${side === "ara" ? "naik" : "turun"} ${numId(Math.abs(((book.lastPrice - book.previousClose) / book.previousClose) * 100), 1)}% dari penutupan kemarin, tinggal ${numId(Math.abs(pct), 1)}% lagi ke batas ${side.toUpperCase()}.`,
         `Antrean ${side === "ara" ? "jual" : "beli"} yang tersisa sebelum ${side.toUpperCase()}: ${lotsId(remaining.shares)} lot.`,
         `Dengan kecepatan transaksi ${Math.round(windowSeconds)} detik terakhir, antrean itu habis dalam sekitar ${numId(minutes, 1)} menit.`,
         ...(remaining.complete
@@ -324,27 +358,33 @@ export function topFiveBidPercent(book: OrderBook): number | null {
 
 export interface ImbalanceInput {
   book: OrderBook;
-  /** The same measurement from the previous poll. Null on the first poll. */
-  previousPercent: number | null;
+  /**
+   * The same measurement from this stock's earlier readings, oldest first, kept only while the
+   * readings ran without a gap. Empty on the first.
+   */
+  previousPercents: number[];
 }
 
 /**
- * One-sided depth at the top of the book, held across two polls.
+ * One-sided depth at the top of the book, held across `imbalancePolls` readings in a row (3).
  *
  * Deliberately NOT the API's `bid_percent`. On the book this was written against that field read 50.1
  * — "balanced" — while the top five levels were 9.9% bid. It is summing whatever the ladder happens
  * to show, and the two sides are not shown to equal depth.
  *
- * The two-poll requirement is the whole noise filter. A single crossing is queue churn; depth that is
- * still one-sided a poll later is a standing condition.
+ * The run of readings is the whole noise filter. A single crossing is queue churn; depth that is
+ * still one-sided readings later is a standing condition. A stock in the rotation is read about once
+ * every five minutes, so for it three readings span roughly ten minutes.
  */
 export function bookImbalance(input: ImbalanceInput, t: Thresholds = DEFAULTS): Signal | null {
-  const { book, previousPercent } = input;
-  const pct = topFiveBidPercent(book);
-  if (pct === null || previousPercent === null) return null;
+  const pct = topFiveBidPercent(input.book);
+  const book = input.book;
+  const need = Math.max(2, t.imbalancePolls ?? 3) - 1;
+  if (pct === null || input.previousPercents.length < need) return null;
+  const earlier = input.previousPercents.slice(-need);
 
-  const bidHeavy = pct >= t.imbalanceHigh && previousPercent >= t.imbalanceHigh;
-  const offerHeavy = pct <= t.imbalanceLow && previousPercent <= t.imbalanceLow;
+  const bidHeavy = pct >= t.imbalanceHigh && earlier.every((p) => p >= t.imbalanceHigh);
+  const offerHeavy = pct <= t.imbalanceLow && earlier.every((p) => p <= t.imbalanceLow);
   if (!bidHeavy && !offerHeavy) return null;
 
   const distance = bidHeavy ? pct - t.imbalanceHigh : t.imbalanceLow - pct;
@@ -356,9 +396,9 @@ export function bookImbalance(input: ImbalanceInput, t: Thresholds = DEFAULTS): 
     symbol: book.symbol,
     severity: severityFor(surprise),
     surprise,
-    headline: `${book.symbol}: top-5 book ${pct.toFixed(0)}% ${bidHeavy ? "bid" : "offer"}-heavy, two polls running`,
+    headline: `${book.symbol}: top-5 book ${pct.toFixed(0)}% ${bidHeavy ? "bid" : "offer"}-heavy, ${earlier.length + 1} readings running`,
     detail: [
-      `Top-5 bid share ${previousPercent.toFixed(0)}% then ${pct.toFixed(0)}%.`,
+      `Top-5 bid share ${[...earlier, pct].map((p) => `${p.toFixed(0)}%`).join(" then ")}.`,
       `The API's own bid_percent reads ${book.bid.length} bid levels against ${book.offer.length} offer levels, so it is not comparable — this is the top five of each.`,
       "Queue size is an intention, not a transaction, and can be withdrawn at any moment.",
     ],
@@ -370,9 +410,9 @@ export function bookImbalance(input: ImbalanceInput, t: Thresholds = DEFAULTS): 
         : `${book.symbol}: antrean jual jauh lebih tebal dari antrean beli`,
       detail: [
         bidHeavy
-          ? `Di 5 level teratas order book, ${numId(pct)}% antrean adalah beli (bid). Pengecekan sebelumnya ${numId(previousPercent)}%.`
-          : `Di 5 level teratas order book, antrean beli (bid) hanya ${numId(pct)}%, sisanya antrean jual. Pengecekan sebelumnya ${numId(previousPercent)}%.`,
-        "Kondisi ini bertahan di dua pengecekan berturut-turut.",
+          ? `Di 5 level teratas order book, ${numId(pct)}% antrean adalah beli (bid).`
+          : `Di 5 level teratas order book, antrean beli (bid) hanya ${numId(pct)}%, sisanya antrean jual.`,
+        `Kondisi ini bertahan di ${numId(earlier.length + 1)} pengecekan berturut-turut (${[...earlier, pct].map((p) => `${numId(p)}%`).join(", ")} beli).`,
         "Antrean belum tentu jadi transaksi dan bisa ditarik kapan saja.",
       ],
     },
@@ -422,7 +462,9 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
     const lost = c.before - c.after;
     const grown = c.after - c.before;
 
-    if (lost > 0 && lost / c.before >= t.wallShrink) {
+    const tooSmall = (shares: number) => t.wallMinValue !== undefined && shares * c.price < t.wallMinValue;
+
+    if (lost > 0 && lost / c.before >= t.wallShrink && !tooSmall(lost)) {
       // Only interesting when trading cannot account for it.
       const explained = Math.min(1, tradedShares / lost);
       if (explained >= t.wallUnexplained) continue;
@@ -439,7 +481,7 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
             headline: `${book.symbol}: ${toLots(lost).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots withdrawn from the ${c.side} at ${c.price}`,
             detail: [
               `Level went ${toLots(c.before).toLocaleString("en-US", { maximumFractionDigits: 0 })} → ${toLots(c.after).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots.`,
-              `Only ${toLots(tradedShares).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots traded market-wide in that time, so trading explains ${(explained * 100).toFixed(0)}% of it.`,
+              `Only ${toLots(tradedShares).toLocaleString("en-US", { maximumFractionDigits: 0 })} lots of this stock traded in that time, so trading explains ${(explained * 100).toFixed(0)}% of it.`,
               "Depth withdrawn. That is an observation about the book, not a claim about anyone's intent.",
             ],
             priceBucket: bucket(c.price),
@@ -447,7 +489,7 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
               headline: `${book.symbol}: antrean besar ${sideId(c.side)} ditarik di harga ${numId(c.price)}`,
               detail: [
                 `Antrean di harga itu turun dari ${lotsId(c.before)} lot menjadi ${lotsId(c.after)} lot.`,
-                `Padahal yang tertransaksi di seluruh pasar dalam waktu itu cuma ${lotsId(tradedShares)} lot, jadi sebagian besar ditarik, bukan dimakan.`,
+                `Padahal saham ini dalam waktu itu cuma tertransaksi ${lotsId(tradedShares)} lot, jadi sebagian besar ditarik, bukan dimakan.`,
                 "Ini pengamatan atas order book, bukan tuduhan soal niat siapa pun.",
               ],
             },
@@ -456,7 +498,7 @@ export function wallChange(input: WallInput, t: Thresholds = DEFAULTS): Signal |
       }
     }
 
-    if (grown > 0 && c.before > 0 && grown / c.before >= 1 && grown > tradedShares) {
+    if (grown > 0 && c.before > 0 && grown / c.before >= 1 && grown > tradedShares && !tooSmall(grown)) {
       const surprise = 1 + Math.min(2, grown / Math.max(1, tradedShares));
       const score = grown;
       if (!best || score > best.score) {

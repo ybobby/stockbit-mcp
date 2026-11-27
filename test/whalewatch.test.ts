@@ -18,6 +18,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   runWhaleWatch,
+  telegramHtml,
   whaleText,
   brokerContextLines,
   elapsedTradingSeconds,
@@ -113,15 +114,18 @@ function harness(
 
 /* ------------------------------- the loop ------------------------------- */
 
-test("an emitted signal reaches Telegram once, with its headline and the WIB time", async () => {
+test("an emitted signal reaches Telegram once, with its headline and level, and no clock of its own", async () => {
   const h = harness([pass({ deltas: null, reason: "first-poll" }), pass({ signals: [surge], engine: { emitted: [surge], suppressed: [], marketWide: null } })]);
   const summary = await runWhaleWatch(h.deps, { intervalMs: 60_000 });
 
   assert.equal(summary.alertsSent, 1);
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0], /^🐋 TEST: transaksi besar masuk/);
+  // Unconfirmed on the tape, a value surge is an anomaly and says so; 🐋 is kept for confirmed whales.
+  assert.match(h.sent[0], /^<b>📈 Anomali · TEST: transaksi besar masuk<\/b>/);
   assert.match(h.sent[0], /Rp 2,10 M berpindah tangan/);
-  assert.match(h.sent[0], /Tingkat: Penting · 10:01:00 WIB/);
+  assert.match(h.sent[0], /\nLevel: 🟧 <b>Penting<\/b>\n/);
+  assert.doesNotMatch(h.sent[0], /WIB/, "Telegram stamps the message; the text carries no clock");
+  assert.match(h.sent[0], /<i>Bukan rekomendasi beli atau jual\.<\/i>/);
   assert.match(h.sent[0], /Bukan rekomendasi beli atau jual/);
   assert.doesNotMatch(h.sent[0], /bn in 60s/, "the Indonesian text replaces the English, it is not appended");
   const alert = h.events.find((e) => e.type === "alert");
@@ -150,9 +154,24 @@ test("an expired session sends one message and ends the loop as auth", async () 
   const summary = await runWhaleWatch(h.deps, { intervalMs: 60_000 });
   assert.equal(summary.ended, "auth");
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0], /sesi login ke sumber data sudah tidak berlaku/);
-  assert.match(h.sent[0], /login ulang/);
-  assert.doesNotMatch(h.sent[0], /stockbit/i, "the group message names no provider");
+  assert.match(h.sent[0], /mode maintenance/);
+  assert.match(h.sent[0], /aktif lagi setelah ada pemberitahuan berikutnya/);
+  assert.doesNotMatch(h.sent[0], /stockbit|login|admin/i, "the group gets a neutral notice, not the chore");
+});
+
+test("after a maintenance stop, the first good pass of the next run tells the group it is back, once", async () => {
+  let flagged = false;
+  const maintenance = { pending: () => flagged, set: () => { flagged = true; }, clear: () => { flagged = false; } };
+  const down = harness([new Error("auth")]);
+  down.deps.maintenance = maintenance;
+  await runWhaleWatch(down.deps, { intervalMs: 60_000 });
+  assert.equal(flagged, true);
+
+  const up = harness([pass(), pass()]);
+  up.deps.maintenance = maintenance;
+  await runWhaleWatch(up.deps, { intervalMs: 60_000 });
+  assert.equal(up.sent.filter((t) => /aktif kembali/.test(t)).length, 1);
+  assert.equal(flagged, false);
 });
 
 test("repeated failures announce an outage once, then announce recovery", async () => {
@@ -164,6 +183,29 @@ test("repeated failures announce an outage once, then announce recovery", async 
   assert.match(h.sent[0], /BUKAN berarti pasar sepi/);
   assert.match(h.sent[1], /bisa membaca data pasar lagi/);
   assert.equal(h.events.filter((e) => e.type === "pass-failed").length, 5);
+});
+
+test("an empty market before the open is logged but never announced as an outage", async () => {
+  // 2026-11-26: top-stock was empty through the 08:45 pre-opening, and the group was told the
+  // watcher could not see the market fifteen minutes before it opened.
+  const empty = () => new Error("top-stock returned no readable rows");
+  const h = harness([empty(), empty(), empty(), empty(), pass()]);
+  let n = 0;
+  h.deps.failureCounts = () => n++ >= 4;
+  await runWhaleWatch(h.deps, { intervalMs: 60_000, failureNotice: 3 });
+  assert.deepEqual(h.sent, [], h.sent.join("\n---\n"));
+  const failed = h.events.filter((e) => e.type === "pass-failed");
+  assert.equal(failed.length, 4);
+  assert.ok(failed.every((e) => e.counted === false));
+});
+
+test("once trading is on, the same failures do count", async () => {
+  const boom = () => new Error("HTTP 502");
+  const h = harness([boom(), boom(), boom(), pass()]);
+  h.deps.failureCounts = () => true;
+  await runWhaleWatch(h.deps, { intervalMs: 60_000, failureNotice: 3 });
+  assert.equal(h.sent.length, 2);
+  assert.match(h.sent[0], /gagal membaca data pasar 3 kali/);
 });
 
 test("a failed Telegram send is recorded, and does not stop the next alert", async () => {
@@ -265,4 +307,24 @@ test("the clock helpers speak WIB", () => {
   assert.equal(wibClock(OPEN), "10:00:00");
   assert.equal(elapsedTradingSeconds(OPEN), 3600);
   assert.equal(elapsedTradingSeconds(new Date("2026-11-25T01:00:00Z")), 60, "before the open floors at a minute");
+});
+
+test("the Telegram text escapes everything, bolds the headline, marks the level and HAKA/HAKI", () => {
+  const html = telegramHtml("🐋 X <b>&: order beli besar (HAKA)\n\n💰 jual (HAKI)\n\nLevel: Sangat penting\nBukan rekomendasi beli atau jual.");
+  const [head, , body, , level, foot] = html.split("\n");
+  assert.equal(head, "<b>🐋 X &lt;b&gt;&amp;: order beli besar (🟢 HAKA)</b>", "escaped, and no tag nested in the bold");
+  assert.equal(body, "💰 jual (🔴 <b>HAKI</b>)");
+  assert.equal(level, "Level: 🟥 <b>Sangat penting</b>");
+  assert.equal(foot, "<i>Bukan rekomendasi beli atau jual.</i>");
+  assert.equal(telegramHtml("✅ Satu baris."), "✅ Satu baris.", "a one-line notice is left plain");
+  assert.equal(telegramHtml("🐋 A lanjutan: beli (HAKA)\n💰 Rp 1 jt"), "<b>🐋 A lanjutan: beli (🟢 HAKA)</b>\n💰 Rp 1 jt");
+});
+
+test("a follow-up gets the AlfeySaham label under its headline, and a failed label refresh is only logged", async () => {
+  const h = harness([pass({ followUps: [{ symbol: "AIMS", text: "🐋 AIMS lanjutan: beli (HAKA)\n💰 Rp 1 jt lagi" }] })]);
+  h.deps.labelFor = (s) => (s === "AIMS" ? "📋 Kandidat per 26 Nov 2026" : null);
+  h.deps.refreshLabels = async () => "alfey list: HTTP 500";
+  await runWhaleWatch(h.deps, { intervalMs: 60_000 });
+  assert.equal(h.sent[0], "<b>🐋 AIMS lanjutan: beli (🟢 HAKA)</b>\n<b>📋 Kandidat per 26 Nov 2026</b>\n💰 Rp 1 jt lagi");
+  assert.ok(h.events.some((e) => e.type === "labels-failed"));
 });

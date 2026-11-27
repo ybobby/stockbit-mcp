@@ -38,6 +38,18 @@ export interface FatigueConfig {
   marketWideShare: number;
   /** The lowest severity that may be emitted at all. */
   floor: Severity;
+  /**
+   * Signal kinds that describe a state lasting the rest of the day, so each symbol gets them ONCE
+   * per session. A stock locked at its auto-reject floor usually stays there until the close; with
+   * a 15-minute cooldown it was re-announced every quarter hour. Added 2026-11-26.
+   */
+  oncePerSession?: SignalKind[];
+  /**
+   * Kinds that are not held back by an EARLIER signal of a different kind on the same symbol. A
+   * whale is usually confirmed right after the anomaly that flagged it; the cross-kind cooldown
+   * would otherwise silence the confirmation in favour of the weaker claim.
+   */
+  ignoreCrossKind?: SignalKind[];
 }
 
 export const FATIGUE_DEFAULTS: FatigueConfig = {
@@ -51,6 +63,8 @@ export const FATIGUE_DEFAULTS: FatigueConfig = {
   adaptiveKindShare: 0.2,
   marketWideShare: 0.4,
   floor: "watch",
+  oncePerSession: ["floor-locked"],
+  ignoreCrossKind: ["whale"],
 };
 
 const RANK: Record<Severity, number> = { info: 0, watch: 1, alert: 2, critical: 3 };
@@ -135,6 +149,8 @@ export class AlertEngine {
   private readonly lastBySymbol = new Map<string, Fired>();
   private readonly firesBySymbol = new Map<string, number>();
   private readonly firesByKind = new Map<SignalKind, number>();
+  /** `symbol|kind` already sent this session, for the `oncePerSession` kinds. */
+  private readonly sentOnce = new Set<string>();
   private sessionCount = 0;
 
   constructor(private readonly config: FatigueConfig = FATIGUE_DEFAULTS) {}
@@ -226,6 +242,12 @@ export class AlertEngine {
         continue;
       }
 
+      const once = this.config.oncePerSession?.includes(s.kind) ? `${s.symbol}|${s.kind}` : null;
+      if (once && this.sentOnce.has(once)) {
+        suppressed.push({ signal: s, emitted: false, reason: "duplicate" });
+        continue;
+      }
+
       const key = AlertEngine.key(s);
       const sameKey = this.lastByKey.get(key);
       const sameSymbol = this.lastBySymbol.get(s.symbol);
@@ -237,6 +259,7 @@ export class AlertEngine {
           continue;
         }
       } else if (
+        !this.config.ignoreCrossKind?.includes(s.kind) &&
         sameSymbol &&
         sameSymbol.kind !== s.kind &&
         nowMs - sameSymbol.at < this.config.cooldownCrossKindMs &&
@@ -247,6 +270,7 @@ export class AlertEngine {
       }
 
       emitted.push(s);
+      if (once) this.sentOnce.add(once);
       this.sessionCount++;
       this.lastByKey.set(key, { at: nowMs, surprise: s.surprise, kind: s.kind });
       this.lastBySymbol.set(s.symbol, { at: nowMs, surprise: s.surprise, kind: s.kind });
@@ -268,6 +292,7 @@ export class AlertEngine {
     this.lastBySymbol.clear();
     this.firesBySymbol.clear();
     this.firesByKind.clear();
+    this.sentOnce.clear();
     this.sessionCount = 0;
   }
 }
