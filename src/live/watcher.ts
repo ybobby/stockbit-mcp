@@ -147,7 +147,7 @@ export interface PassResult {
   /** True on a pass that re-read top-stock and rebuilt the queue. */
   ranked?: boolean;
   /** Follow-up lines for stocks already announced as whales. Sent as they are, outside the engine. */
-  followUps?: string[];
+  followUps?: { symbol: string; text: string }[];
   /** What the confirmation stage did this pass, for the log. */
   whale?: { requests: number; confirmed: number; swept: number; slots: string[]; sweepGap: boolean };
 }
@@ -186,6 +186,11 @@ export interface WatcherOptions {
    * `true` makes a default one. Off unless asked for, and only when the spec enables `whale`.
    */
   whale?: boolean | WhaleConfirmer;
+  /**
+   * Symbols to keep in the order-book queue whenever they appear in the ranking at all, ahead of the
+   * lower-ranked ones: AlfeySaham's open positions and candidates. Read at every re-rank.
+   */
+  pinned?: () => string[];
 }
 
 /**
@@ -293,6 +298,17 @@ export class SignalWatcher {
         });
       }
       this.queue = chooseBookCandidates(all, QUEUE_SIZE, this.opts.wide ? (this.opts.wideBookSlots ?? DEFAULT_WIDE_BOOK_SLOTS) : 0);
+      const pinned = new Set((this.opts.pinned?.() ?? []).map((x) => x.toUpperCase()));
+      if (pinned.size) {
+        // A pinned stock the ranking carries but the queue left out takes the place of the lowest-ranked.
+        const inQueue = new Set(this.queue.map((q) => q.symbol));
+        const missing = all.filter((a) => pinned.has(a.symbol) && !inQueue.has(a.symbol) && (a.value > 0 || a.lots > 0));
+        if (missing.length) {
+          const kept = this.queue.filter((q) => pinned.has(q.symbol));
+          const others = this.queue.filter((q) => !pinned.has(q.symbol));
+          this.queue = [...kept, ...missing, ...others].slice(0, QUEUE_SIZE);
+        }
+      }
       this.rankedAt = at;
       this.cursor = 0;
       this.symbolsSeen = read.snapshot.symbols.size;
@@ -383,7 +399,7 @@ export class SignalWatcher {
     }
 
     // ---- whale confirmation: anomalies checked against the tape, plus the market-wide sweep ----
-    let followUps: string[] | undefined;
+    let followUps: PassResult["followUps"];
     let whale: PassResult["whale"];
     if (this.confirmer) {
       const anomalies = signals.filter((sig) => ANOMALY_KINDS.has(sig.kind));
@@ -411,7 +427,7 @@ export class SignalWatcher {
         signals.push(whaleSignal(finding, triggers, "confirm"));
       }
       for (const finding of r.swept) signals.push(whaleSignal(finding, [], "sweep"));
-      if (r.followUps.length) followUps = r.followUps.map((f) => followUpText(f.finding, f.minutes));
+      if (r.followUps.length) followUps = r.followUps.map((f) => ({ symbol: f.finding.symbol, text: followUpText(f.finding, f.minutes) }));
       whale = { requests: r.requests, confirmed: r.confirmed.size, swept: r.swept.length, slots: r.slots, sweepGap: r.sweepGap };
     }
 

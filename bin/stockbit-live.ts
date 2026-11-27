@@ -42,6 +42,7 @@ import { parseInterval, describeInterval, IntervalParseError } from "../src/live
 import { parseScope, resolveScope, describeScope, inScope, ScopeParseError } from "../src/live/scope.js";
 import { MarketWatcher } from "../src/live/poller.js";
 import { SignalWatcher } from "../src/live/watcher.js";
+import { AlfeyList } from "../src/live/alfeylist.js";
 import { compilePrompt, describeSpec } from "../src/live/promptspec.js";
 import { attribute, parseTape } from "../src/live/attribution.js";
 import { readBandar } from "../src/live/bandar.js";
@@ -348,6 +349,18 @@ function maintenanceMarker(): { pending(): boolean; set(): void; clear(): void }
   };
 }
 
+/**
+ * AlfeySaham's position/candidate list, when configured and not switched off for this run. The
+ * label reveals running positions, so it is opt-in by configuration and meant for the internal group.
+ */
+function alfeyListFromEnv(): AlfeyList | null {
+  if (flag("no-alfey-labels")) return null;
+  const url = process.env.ALFEY_WATCHLIST_URL?.trim();
+  const token = process.env.ALFEY_WATCHLIST_TOKEN?.trim();
+  if (!url || !token || !/^https:\/\//.test(url)) return null;
+  return new AlfeyList({ url, token });
+}
+
 async function watch(): Promise<void> {
   const [, scopeToken, intervalToken, ...promptWords] = positionals();
 
@@ -405,14 +418,26 @@ async function watch(): Promise<void> {
     `whale watch: ${describeScope(resolved)}${flag("wide") ? " plus Stockbit's top value/volume/frequency movers lists (up to 150 more, 3 extra requests per re-rank)" : ""}, ${describeInterval(interval)}${dryRun ? ", DRY RUN (nothing sent)" : ", alerts to Telegram"}; log at ${whaleLogPath()}. Ctrl-C to stop.\n`,
   );
 
+  const alfey = alfeyListFromEnv();
   const summary = await runWhaleWatch(
     {
       newWatcher: () =>
-        new SignalWatcher({ scope: resolved, spec, elapsedSeconds: () => elapsedTradingSeconds(new Date()), wide: flag("wide"), uncapped: true, whale: !flag("no-whale") }),
+        new SignalWatcher({
+          scope: resolved,
+          spec,
+          elapsedSeconds: () => elapsedTradingSeconds(new Date()),
+          wide: flag("wide"),
+          uncapped: true,
+          whale: !flag("no-whale"),
+          ...(alfey ? { pinned: () => alfey.symbols() } : {}),
+        }),
       now: () => new Date(),
       sleep: nap,
       inWindow: (now) => flag("always") || isWithinWhaleWindow(now),
       maintenance: dryRun ? undefined : maintenanceMarker(),
+      ...(alfey
+        ? { labelFor: (symbol: string) => alfey.label(symbol), refreshLabels: (now: Date) => alfey.refresh(now.getTime()) }
+        : {}),
       failureCounts: (now) => flag("always") || sessionClock(now).isTradingHours,
       send: async (text) => {
         if (dryRun || !telegram) {

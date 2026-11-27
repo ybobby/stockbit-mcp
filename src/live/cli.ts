@@ -59,6 +59,7 @@ export const LIVE_COMMANDS: CommandTable = {
       "--always": "poll even outside IDX hours (testing only: a shut market reads as flat)",
       "--wide": "also watch Stockbit's top value/volume/frequency movers lists (cheap, high-lot stocks)",
       "--no-whale": "skip the running-trade confirmation and the market-wide sweep for large prints",
+      "--no-alfey-labels": "do not label alerts with AlfeySaham positions/candidates (on when ALFEY_WATCHLIST_URL and ALFEY_WATCHLIST_TOKEN are set)",
       "--pretty": "indented JSON, for reading by eye",
     },
     positionals: [
